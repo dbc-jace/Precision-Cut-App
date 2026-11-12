@@ -34,11 +34,12 @@ async function firebaseStore(onError) {
     onAuth(cb) { au.onAuthStateChanged(auth, (u) => cb(toUser(u))); },
     signInGoogle() { return au.signInWithPopup(auth, new au.GoogleAuthProvider()); },
     signIn(email, pw) { return au.signInWithEmailAndPassword(auth, email, pw); },
-    async signUp(email, pw) {
+    // continueUrl puts a "Continue" button on the "email confirmed" page that brings them back to the app.
+    async signUp(email, pw, continueUrl) {
       const cred = await au.createUserWithEmailAndPassword(auth, email, pw);
-      await au.sendEmailVerification(cred.user);
+      await au.sendEmailVerification(cred.user, continueUrl ? { url: continueUrl } : undefined);
     },
-    resendVerification() { return au.sendEmailVerification(auth.currentUser); },
+    resendVerification(continueUrl) { return au.sendEmailVerification(auth.currentUser, continueUrl ? { url: continueUrl } : undefined); },
     async reloadUser() {
       await auth.currentUser.reload();
       await auth.currentUser.getIdToken(true); // refresh so the database sees "verified"

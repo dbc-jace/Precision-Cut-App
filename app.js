@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=1.1.0';
+import { createStore, newId } from './store.js?v=1.1.1';
 
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.1.1';
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -71,9 +71,13 @@ let unsubs = [];
 const inviteEmail = (() => { const m = location.hash.match(/invite=([^&]+)/); return m ? decodeURIComponent(m[1]) : ''; })();
 // Invite link (#join=...): remembered on this phone so it survives the email-confirmation step.
 const JOIN_KEY = 'pc_join';
-(() => { const m = location.hash.match(/join=([A-Za-z0-9]+)/); if (m) localStorage.setItem(JOIN_KEY, m[1]); })();
+// Accepts #join=... (invite texts) and ?join=... (the "Continue" button after confirming an email).
+(() => { const m = (location.hash + '&' + location.search).match(/join=([A-Za-z0-9]+)/); if (m) localStorage.setItem(JOIN_KEY, m[1]); })();
 const joinCode = () => localStorage.getItem(JOIN_KEY) || '';
+const backFromEmail = /[?&]join=/.test(location.search);
 const inviteLink = (code) => appLink() + '#join=' + code;
+// Where the email-confirmation link sends them back to (keeps their invite attached).
+const returnLink = () => appLink() + (joinCode() ? '?join=' + joinCode() : '');
 // Older saved welcome texts said "sign in with this email"; invite links don't need one.
 const welcomeTpl = (key) => (/\{email\}/.test(settings()[key]) ? DEFAULTS[key] : settings()[key]);
 
@@ -689,10 +693,11 @@ const authCard = (inner) => `<div class="auth"><div class="card">
   <img src="logo.jpg" alt="Precision Cut logo" class="logo"><h1>Precision Cut Lawns</h1>
   ${state.authMsg ? `<p class="msg">${esc(state.authMsg)}</p>` : ''}${inner}</div></div>`;
 function renderSignIn() {
-  if (joinCode() && !state.authModeSet) state.authMode = 'up';
+  if (joinCode() && !state.authModeSet) state.authMode = backFromEmail ? 'in' : 'up';
   const up = state.authMode === 'up';
   app.innerHTML = authCard(`
-    ${joinCode() ? '<div class="okbar">Welcome! Sign in with Google, or create an account with any email you like.</div>'
+    ${joinCode() && backFromEmail ? '<div class="okbar">Email confirmed! Sign in with the email and password you just made to finish joining.</div>'
+      : joinCode() ? '<div class="okbar">Welcome! Sign in with Google, or create an account with any email you like.</div>'
       : inviteEmail ? '<div class="okbar">Welcome! Sign in with Google or create a password using the email Jace invited.</div>' : ''}
     <button class="btn google" data-a="google">Sign in with Google</button>
     <div class="muted center small">or with email</div>
@@ -703,7 +708,7 @@ function renderSignIn() {
     ${up ? '' : '<button class="link center small" data-a="resetPw">Forgot password?</button>'}`);
 }
 function renderVerify() {
-  app.innerHTML = authCard(`<p>We sent a link to <b>${esc(state.user.email)}</b>. Tap it, then come back here.</p>
+  app.innerHTML = authCard(`<p>We sent a link to <b>${esc(state.user.email)}</b>. Tap it in the email, then tap <b>Continue</b> to come back to the app.</p>
     <button class="btn btn-primary" data-a="checkVerified">I’ve confirmed my email</button>
     <button class="btn btn-ghost" data-a="resendVerify">Send the link again</button><button class="link center" data-a="signOut">Use a different account</button>`);
 }
@@ -1047,7 +1052,7 @@ const A = {
   // Auth
   async google() { await authRun(() => store.signInGoogle()); },
   async signIn() { await authRun(() => store.signIn(val('au_email').trim(), val('au_pw'))); },
-  async signUp() { await authRun(async () => { await store.signUp(val('au_email').trim(), val('au_pw')); state.authMsg = 'Check your email for a confirmation link.'; }); },
+  async signUp() { await authRun(async () => { await store.signUp(val('au_email').trim(), val('au_pw'), returnLink()); state.authMsg = 'Check your email for a confirmation link. After you tap it, tap Continue to come back here.'; }); },
   authMode() { state.authModeSet = true; state.authMode = state.authMode === 'up' ? 'in' : 'up'; state.authMsg = ''; render(); },
   async joinApp() {
     const name = val('join_name').trim();
@@ -1066,7 +1071,7 @@ const A = {
   },
   async resetPw() { const e = val('au_email').trim(); if (!e) { state.authMsg = 'Type your email first.'; return render(); } await authRun(async () => { await store.resetPassword(e); state.authMsg = 'Password reset email sent.'; }); },
   async checkVerified() { state.user = await store.reloadUser(); if (!state.user.verified) { state.authMsg = 'Not confirmed yet. Tap the link in the email first.'; render(); } else checkAccess(); },
-  async resendVerify() { await store.resendVerification(); state.authMsg = 'Sent again.'; render(); },
+  async resendVerify() { await store.resendVerification(returnLink()); state.authMsg = 'Sent again.'; render(); },
   async claimSetup() { await authRun(async () => { await store.claimSetup(state.user.email, val('setup_name').trim() || 'Jace'); await checkAccess(); }); },
   async signOut() { localStorage.removeItem('pc_demo_as'); state.locked = false; await store.signOut(); if (store.mode === 'local') location.reload(); },
 };
@@ -1138,6 +1143,12 @@ document.addEventListener('toggle', (ev) => {
   const k = ev.target.dataset?.fold;
   if (k) ev.target.open ? state.openFolds.add(k) : state.openFolds.delete(k);
 }, true);
+
+// Coming back to this tab after confirming the email: check automatically.
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState !== 'visible' || !store || store.mode !== 'shared' || !state.user || state.user.verified) return;
+  try { state.user = await store.reloadUser(); if (state.user.verified) checkAccess(); } catch {}
+});
 
 /* ---------- start ---------- */
 (async function start() {
