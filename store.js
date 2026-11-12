@@ -65,6 +65,22 @@ async function firebaseStore(onError) {
       b.set(fs.doc(db, 'meta', 'setup'), { owner: email, ts: Date.now() });
       await b.commit();
     },
+    // Join from an invite link: creates their login record (and a new customer
+    // record if the link wasn't for an existing customer) and marks the link used.
+    async redeemInvite(code, email, name) {
+      const inv = await this.getDoc('invites', code);
+      if (!inv || inv.usedBy) throw Object.assign(new Error('This invite link was already used or cancelled. Ask Jace for a new one.'), { code: 'invite/used' });
+      const b = fs.writeBatch(db);
+      let cid = inv.customerId || null;
+      if (inv.role === 'customer' && !cid) {
+        cid = newId();
+        b.set(fs.doc(db, 'customers', cid), { name, email, phone: '', address: '', deck: '', active: true,
+          grass: false, grassPlan: 'weekly', snow: false, snowPlan: 'perSnow', createdAt: Date.now(), joinedViaInvite: true });
+      }
+      b.set(fs.doc(db, 'users', email), { name, role: inv.role, invite: code, ...(cid ? { customerId: cid } : {}) });
+      b.update(fs.doc(db, 'invites', code), { usedBy: email, usedAt: Date.now(), name });
+      await b.commit();
+    },
     add(name, data) {
       const ref = fs.doc(fs.collection(db, name));
       fs.setDoc(ref, data).catch(fail);

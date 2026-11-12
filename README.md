@@ -28,7 +28,7 @@ See **HANDOFF.md** for the step-by-step Firebase setup you can do from your phon
 
 ## Security & privacy
 - The **code** is public; the **data** lives in Firebase and is protected by `firestore.rules` on Google's servers.
-- Only emails you add can get in. Customers can only see their own info and invoices. Crew can't see prices or money.
+- Only people you send an invite link to can get in (each link works once). Customers can only see their own info and invoices. Crew can't see prices or money.
 - Never commit backups, CSV exports or screenshots of customer data to this repo.
 
 ## Run locally

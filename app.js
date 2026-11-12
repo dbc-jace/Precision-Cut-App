@@ -1,6 +1,6 @@
-import { createStore } from './store.js?v=1.0.0';
+import { createStore, newId } from './store.js?v=1.1.0';
 
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.1.0';
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -52,8 +52,8 @@ const DEFAULTS = {
   receiptEnabled: false,
   receiptMsg: 'Got it, thanks {first}! Received {total} for {date}. - Precision Cut Lawns',
   quoteMsg: 'Hi {first}, here\'s your quote from Precision Cut Lawns. Call or text {phone} with any questions!',
-  welcomeCustomer: 'Hi {first}! Welcome to Precision Cut Lawns. I set up an account for you where you can see your schedule, skip a week, request snow removal and pay your invoices.\n\nOpen {link} and sign in with this email: {email}\n\nTip: tap Share, then "Add to Home Screen" to keep it handy. - Jace',
-  welcomeCrew: 'Hey {first}, welcome to the Precision Cut crew! Open {link} and sign in with this email: {email} to see the route. Tap Share, then "Add to Home Screen" to keep it handy.',
+  welcomeCustomer: 'Hi {first}! Welcome to Precision Cut Lawns. Tap this link to set up your account, where you can see your schedule, skip a week, request snow removal and pay your invoices:\n\n{link}\n\nTip: tap Share, then "Add to Home Screen" to keep it handy. - Jace',
+  welcomeCrew: 'Hey {first}, welcome to the Precision Cut crew! Tap this link to set up your account and see the route:\n\n{link}\n\nTap Share, then "Add to Home Screen" to keep it handy.',
 };
 const settings = () => ({ ...DEFAULTS, ...(state.settingsDoc || {}) });
 
@@ -61,7 +61,7 @@ const settings = () => ({ ...DEFAULTS, ...(state.settingsDoc || {}) });
 const state = {
   user: null, access: null, account: null, setupDone: true, authMsg: '', authMode: 'in',
   loaded: new Set(),
-  customers: [], notes: [], pricing: [], stops: [], visits: [], requests: [], expenses: [], addons: [], quotes: [], users: [], settingsDoc: null,
+  customers: [], notes: [], pricing: [], stops: [], visits: [], requests: [], expenses: [], addons: [], quotes: [], users: [], invites: [], settingsDoc: null,
   tab: 'route', routeSeg: 'grass', week: weekStart(new Date()), snowDate: today(),
   custId: null, editing: false, q: '', moneyTab: 'overview', quoteId: null, quoteSel: [], openFolds: new Set(),
   sheet: null, locked: false, showPaidHistory: false,
@@ -69,6 +69,13 @@ const state = {
 let store;
 let unsubs = [];
 const inviteEmail = (() => { const m = location.hash.match(/invite=([^&]+)/); return m ? decodeURIComponent(m[1]) : ''; })();
+// Invite link (#join=...): remembered on this phone so it survives the email-confirmation step.
+const JOIN_KEY = 'pc_join';
+(() => { const m = location.hash.match(/join=([A-Za-z0-9]+)/); if (m) localStorage.setItem(JOIN_KEY, m[1]); })();
+const joinCode = () => localStorage.getItem(JOIN_KEY) || '';
+const inviteLink = (code) => appLink() + '#join=' + code;
+// Older saved welcome texts said "sign in with this email"; invite links don't need one.
+const welcomeTpl = (key) => (/\{email\}/.test(settings()[key]) ? DEFAULTS[key] : settings()[key]);
 
 const role = () => state.account?.role;
 const isAdmin = () => role() === 'admin';
@@ -213,7 +220,7 @@ function subscribe() {
   const onData = (key) => (done) => (docs) => { state[key] = docs; done(); scheduleRender(); };
   const W = (name) => watch(name, (done) => store.watch(name, onData(name)(done)));
   watch('settings', (done) => store.watchDoc('settings', 'main', (d) => { state.settingsDoc = d; done(); scheduleRender(); }));
-  if (isAdmin()) ['customers', 'notes', 'pricing', 'stops', 'visits', 'requests', 'expenses', 'addons', 'quotes', 'users'].forEach(W);
+  if (isAdmin()) ['customers', 'notes', 'pricing', 'stops', 'visits', 'requests', 'expenses', 'addons', 'quotes', 'users', 'invites'].forEach(W);
   else if (role() === 'crew') ['customers', 'notes', 'stops', 'requests'].forEach(W);
   else if (role() === 'customer') {
     const cid = state.account.customerId;
@@ -238,6 +245,8 @@ async function checkAccess() {
   try {
     let acct = await store.getDoc('users', state.user.email);
     if (!acct && store.mode === 'local') { await seedDemo(); acct = await store.getDoc('users', state.user.email); }
+    if (acct) localStorage.removeItem(JOIN_KEY);
+    if (!acct && joinCode() && store.mode === 'shared') { state.access = 'join'; return render(); }
     if (!acct) {
       const setup = await store.getDoc('meta', 'setup').catch(() => null);
       state.setupDone = !!setup; state.access = 'none'; return render();
@@ -258,6 +267,7 @@ function render() {
   if (!store) return;
   if (!state.user) return renderSignIn();
   if (!state.user.verified) return renderVerify();
+  if (state.access === 'join') return renderJoin();
   if (state.access === 'none') return renderNoAccess();
   if (state.access !== 'ok' || (state.need && state.loaded.size < state.need.length)) { app.innerHTML = '<p class="center muted" style="padding:40px">Loading…</p>'; return; }
   if (state.locked) return renderLock();
@@ -440,7 +450,7 @@ function viewCustomer() {
         <button class="btn btn-ghost" data-a="reinvite" data-email="${esc(u.id)}">Send the welcome text again</button>
         <button class="link danger" data-a="removeUser" data-email="${esc(u.id)}">Remove app access</button>`
       : `<div class="muted">Give ${esc(first(c.name))} a login to see their schedule, skip, request snow removal and pay invoices.</div>
-        <button class="btn btn-primary" data-a="inviteCustomer" data-cid="${c.id}" ${c.email ? '' : 'disabled'}>Invite to the app</button>${c.email ? '' : '<div class="muted small">Add their email first (Edit).</div>'}`}</div>
+        <button class="btn btn-primary" data-a="inviteCustomer" data-cid="${c.id}">Invite to the app</button><div class="muted small">Sends a link. They sign up with any email.</div>`}</div>
     <div class="sec">Invoices</div>
     <div class="card list">${visits.length ? visits.map((v) => `<div class="line"><div class="grow"><div>${shortDate(v.date)} · ${esc(v.desc || 'Lawn mowing')}</div><div class="muted small">${esc(v.invoiceNo)}</div></div>
         <span class="flex"><b>${money(v.total)}</b>${v.paid ? pill('p-green', 'Paid') : `<button class="btn btn-ghost btn-sm" data-a="sendInvoice" data-id="${v.id}">Send</button>`}</span></div>`).join('') : '<div class="empty">No invoices yet.</div>'}</div>` : ''}`;
@@ -565,6 +575,7 @@ function viewSettings() {
   const addons = [...state.addons].sort(byName);
   const users = [...state.users].filter((u) => !u.id.endsWith('@demo') || u.role !== 'customer')
     .sort((a, b) => ({ admin: 0, crew: 1, customer: 2 }[a.role] - { admin: 0, crew: 1, customer: 2 }[b.role]) || byName(a, b));
+  const openInvites = state.invites.filter((i) => !i.usedBy).sort((a, b) => b.createdAt - a.createdAt);
   const msg = (k, title, hint) => fold('msg_' + k, title, hint, field(k, 'Text', '', true), true);
   return [
     fold('addons', 'Add-ons', `${addons.length} saved`, `<div class="muted">Extras you can add when you mark a job done, or on a quote. You can change the price each time.</div>
@@ -586,11 +597,16 @@ function viewSettings() {
       ${msg('invoiceMsg', 'Invoice text', 'Sent with the PDF')}
       ${fold('msg_receipt', 'Receipt text', s.receiptEnabled ? 'On' : 'Off', `<label class="check"><input type="checkbox" data-setting="receiptEnabled" ${s.receiptEnabled ? 'checked' : ''}> Offer a receipt text when I mark Paid</label>${field('receiptMsg', 'Text', '', true)}`, true)}
       ${msg('quoteMsg', 'Quote text', 'Sent with the quote PDF')}${msg('welcomeCustomer', 'Customer welcome', 'Sent with their invite')}${msg('welcomeCrew', 'Crew welcome', 'Sent with their invite')}`),
-    fold('users', 'Users', `${users.length} with access`, `<div class="b">Add a crew member</div>
-      <label class="f"><span class="lbl">Name</span><input class="inp" id="u_name"></label>
-      <label class="f"><span class="lbl">Email (they sign in with this)</span><input class="inp" id="u_email" type="email" autocapitalize="off"></label>
-      <button class="btn btn-primary" data-a="addCrew">Add &amp; send welcome</button>
-      <div class="muted small">Customers are invited from their page in Customers.</div>
+    fold('users', 'Users', `${users.length} with access${openInvites.length ? ` · ${openInvites.length} open invite${openInvites.length === 1 ? '' : 's'}` : ''}`, `<div class="b">Invite someone</div>
+      <div class="muted small">Makes a link you can text or copy to anyone. They tap it, sign up with any email, and type their name. New customers show up in Customers so you can fill in the rest. Each link works once.</div>
+      <button class="btn btn-primary" data-a="newInvite" data-role="customer">Customer invite link</button>
+      <button class="btn btn-ghost" data-a="newInvite" data-role="crew">Crew invite link</button>
+      ${openInvites.length ? `<div class="b" style="margin-top:6px">Open invite links</div>
+      <div class="card list" style="padding:0;border:0">${openInvites.map((i) => `<div class="line"><div class="grow"><div class="b">${i.customerId && cust(i.customerId) ? esc(cust(i.customerId).name) : i.role === 'crew' ? 'Crew' : 'New customer'}</div>
+        <div class="muted small">Made ${shortDate(ymd(new Date(i.createdAt)))} · not used yet</div></div>
+        <button class="link" style="min-height:32px" data-a="resendInvite" data-id="${i.id}">Send</button>
+        <button class="link danger" style="margin-left:10px;min-height:32px" data-a="cancelInvite" data-id="${i.id}">Cancel</button></div>`).join('')}</div>` : ''}
+      <div class="b" style="margin-top:6px">People with access</div>
       <div class="card list" style="padding:0 0 0 0;border:0">${users.map((u) => `<div class="line"><div class="grow"><div class="b">${esc(u.name)}</div><div class="muted small">${esc(u.id)}</div></div>
         ${pill(u.role === 'admin' ? 'p-green' : u.role === 'crew' ? 'p-blue' : 'p-gray', u.role[0].toUpperCase() + u.role.slice(1))}
         ${u.id !== state.user.email ? `<button class="link danger" style="margin-left:10px;min-height:32px" data-a="removeUser" data-email="${esc(u.id)}">Remove</button>` : ''}</div>`).join('')}</div>`),
@@ -673,9 +689,11 @@ const authCard = (inner) => `<div class="auth"><div class="card">
   <img src="logo.jpg" alt="Precision Cut logo" class="logo"><h1>Precision Cut Lawns</h1>
   ${state.authMsg ? `<p class="msg">${esc(state.authMsg)}</p>` : ''}${inner}</div></div>`;
 function renderSignIn() {
+  if (joinCode() && !state.authModeSet) state.authMode = 'up';
   const up = state.authMode === 'up';
   app.innerHTML = authCard(`
-    ${inviteEmail ? '<div class="okbar">Welcome! Sign in with Google or create a password using the email Jace invited.</div>' : ''}
+    ${joinCode() ? '<div class="okbar">Welcome! Sign in with Google, or create an account with any email you like.</div>'
+      : inviteEmail ? '<div class="okbar">Welcome! Sign in with Google or create a password using the email Jace invited.</div>' : ''}
     <button class="btn google" data-a="google">Sign in with Google</button>
     <div class="muted center small">or with email</div>
     <label class="f"><span class="lbl">Email</span><input class="inp" id="au_email" type="email" autocomplete="email" autocapitalize="off" value="${esc(inviteEmail)}"></label>
@@ -688,6 +706,13 @@ function renderVerify() {
   app.innerHTML = authCard(`<p>We sent a link to <b>${esc(state.user.email)}</b>. Tap it, then come back here.</p>
     <button class="btn btn-primary" data-a="checkVerified">I’ve confirmed my email</button>
     <button class="btn btn-ghost" data-a="resendVerify">Send the link again</button><button class="link center" data-a="signOut">Use a different account</button>`);
+}
+function renderJoin() {
+  app.innerHTML = authCard(`<p>Welcome to Precision Cut Lawns! What’s your name?</p>
+    <label class="f"><span class="lbl">Your name</span><input class="inp" id="join_name" autocomplete="name" value="${esc(state.user.name)}"></label>
+    <button class="btn btn-primary" data-a="joinApp">Join</button>
+    <div class="muted small center">Signed in as ${esc(state.user.email)}</div>
+    <button class="link center" data-a="signOut">Use a different account</button>`);
 }
 function renderNoAccess() {
   app.innerHTML = authCard(state.setupDone
@@ -742,9 +767,10 @@ function renderSheet() {
         ${c.phone ? `<a class="btn btn-ghost btn-sm" href="${smsHref(c.phone, s.oncallMsg)}">Text</a>` : ''}<button class="btn btn-lime btn-sm" data-a="oncallYes" data-cid="${c.id}">Yes</button></div>`).join('') || '<div class="muted">Everyone’s been added this week.</div>'}
       <button class="btn btn-ghost" data-a="closeSheet">Close</button>`;
   } else if (sh.kind === 'text') {
-    inner = `<div class="b" style="font-size:20px">${esc(sh.title)}</div><div class="card" style="white-space:pre-line;background:#F4F6F2">${esc(sh.body)}</div>
+    inner = `<div class="b" style="font-size:20px">${esc(sh.title)}</div><div class="card" style="white-space:pre-line;overflow-wrap:anywhere;background:#F4F6F2">${esc(sh.body)}</div>
       ${sh.phone ? `<a class="btn btn-primary" href="${smsHref(sh.phone, sh.body)}" data-a="closeSheet">Open in Messages</a>` : ''}
-      <button class="btn btn-ghost" data-a="shareText">Share / copy</button><button class="btn btn-ghost" data-a="closeSheet">Done</button>`;
+      <button class="btn ${sh.phone ? 'btn-ghost' : 'btn-primary'}" data-a="shareText">Share / copy</button>
+      ${sh.link ? '<button class="btn btn-ghost" data-a="copyLink">Copy just the link</button>' : ''}<button class="btn btn-ghost" data-a="closeSheet">Done</button>`;
   } else if (sh.kind === 'setLock') {
     inner = `<div class="b" style="font-size:20px">Passcode lock</div>
       <label class="f"><span class="lbl">New 4-digit passcode</span><input class="inp" id="lk_pin" inputmode="numeric" maxlength="4" type="password"></label>
@@ -763,7 +789,20 @@ function addSnowStop(cid, date) {
   return true;
 }
 const snowDesc = (stop) => 'Snow removal' + ((stop?.visit || 1) > 1 ? ` - visit ${stop.visit}` : '');
-const openText = (title, body, phone) => { state.sheet = { kind: 'text', title, body, phone }; renderSheet(); };
+const openText = (title, body, phone, link) => { state.sheet = { kind: 'text', title, body, phone, link }; renderSheet(); };
+function makeInvite(role, customerId) {
+  const id = newId();
+  const data = { role, createdAt: Date.now(), createdBy: state.user.email, ...(customerId ? { customerId } : {}) };
+  store.set('invites', id, data);
+  sendInvite({ id, ...data });
+}
+function sendInvite(i) {
+  const c = i.customerId && cust(i.customerId);
+  const tpl = welcomeTpl(i.role === 'crew' ? 'welcomeCrew' : 'welcomeCustomer');
+  const who = c ? first(c.name) : 'there';
+  openText(c ? 'Invite for ' + who : i.role === 'crew' ? 'Crew invite link' : 'Customer invite link',
+    fill(tpl, { first: who, link: inviteLink(i.id), email: '' }), c?.phone || '', inviteLink(i.id));
+}
 
 /* ---------- actions ---------- */
 const A = {
@@ -870,15 +909,15 @@ const A = {
     const u = userForCustomer(c.id); if (u) store.remove('users', u.id);
     state.custId = null; state.editing = false; render();
   },
-  inviteCustomer(el) {
-    const c = cust(el.dataset.cid);
-    store.set('users', c.email, { name: c.name, role: 'customer', customerId: c.id });
-    openText('Welcome text for ' + first(c.name), fill(settings().welcomeCustomer, { first: first(c.name), link: appLink() + '#invite=' + encodeURIComponent(c.email), email: c.email }), c.phone);
-  },
+  // Invite links (no email needed up front)
+  inviteCustomer(el) { makeInvite('customer', el.dataset.cid); },
+  newInvite(el) { makeInvite(el.dataset.role); },
+  resendInvite(el) { const i = state.invites.find((x) => x.id === el.dataset.id); if (i) sendInvite(i); },
+  cancelInvite(el) { if (!confirm('Cancel this invite link? It will stop working.')) return; store.remove('invites', el.dataset.id); toast('Invite cancelled'); },
   reinvite(el) {
     const u = state.users.find((x) => x.id === el.dataset.email); const c = u?.customerId && cust(u.customerId);
-    const tpl = u.role === 'crew' ? settings().welcomeCrew : settings().welcomeCustomer;
-    openText('Welcome text', fill(tpl, { first: first(u.name), link: appLink() + '#invite=' + encodeURIComponent(u.id), email: u.id }), c?.phone);
+    const tpl = u.role === 'crew' ? welcomeTpl('welcomeCrew') : welcomeTpl('welcomeCustomer');
+    openText('Welcome text', fill(tpl, { first: first(u.name), link: appLink(), email: u.id }), c?.phone);
   },
   removeUser(el) { if (!confirm(`Remove app access for ${el.dataset.email}?`)) return; store.remove('users', el.dataset.email); toast('Access removed'); },
   billSeason(el) {
@@ -958,6 +997,7 @@ const A = {
     store.set('users', email, { name, role: 'crew' });
     openText('Welcome text for ' + first(name), fill(settings().welcomeCrew, { first: first(name), link: appLink() + '#invite=' + encodeURIComponent(email), email }), '');
   },
+  copyLink() { navigator.clipboard?.writeText(state.sheet.link).then(() => toast('Link copied'), () => toast('Couldn’t copy. Use Share instead.')); },
   shareText() { const b = state.sheet.body; if (navigator.share) navigator.share({ text: b }).catch(() => {}); else navigator.clipboard?.writeText(b).then(() => toast('Copied')); },
   backup() {
     const data = {}; ['customers', 'notes', 'pricing', 'stops', 'visits', 'requests', 'expenses', 'addons', 'quotes', 'users'].forEach((k) => { data[k] = state[k]; });
@@ -1008,7 +1048,22 @@ const A = {
   async google() { await authRun(() => store.signInGoogle()); },
   async signIn() { await authRun(() => store.signIn(val('au_email').trim(), val('au_pw'))); },
   async signUp() { await authRun(async () => { await store.signUp(val('au_email').trim(), val('au_pw')); state.authMsg = 'Check your email for a confirmation link.'; }); },
-  authMode() { state.authMode = state.authMode === 'up' ? 'in' : 'up'; state.authMsg = ''; render(); },
+  authMode() { state.authModeSet = true; state.authMode = state.authMode === 'up' ? 'in' : 'up'; state.authMsg = ''; render(); },
+  async joinApp() {
+    const name = val('join_name').trim();
+    if (!name) { state.authMsg = 'Type your name first.'; return render(); }
+    try {
+      state.authMsg = '';
+      await store.redeemInvite(joinCode(), state.user.email, name);
+      localStorage.removeItem(JOIN_KEY);
+      await checkAccess();
+    } catch (e) {
+      console.error(e);
+      localStorage.removeItem(JOIN_KEY);
+      state.authMsg = e.code === 'invite/used' ? e.message : 'That invite link didn’t work. Ask Jace for a new one.';
+      checkAccess();
+    }
+  },
   async resetPw() { const e = val('au_email').trim(); if (!e) { state.authMsg = 'Type your email first.'; return render(); } await authRun(async () => { await store.resetPassword(e); state.authMsg = 'Password reset email sent.'; }); },
   async checkVerified() { state.user = await store.reloadUser(); if (!state.user.verified) { state.authMsg = 'Not confirmed yet. Tap the link in the email first.'; render(); } else checkAccess(); },
   async resendVerify() { await store.resendVerification(); state.authMsg = 'Sent again.'; render(); },

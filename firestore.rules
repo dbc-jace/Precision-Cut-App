@@ -16,6 +16,37 @@ service cloud.firestore {
     function myCustomerId() { return me().customerId; }
     function ownsCustomer(cid) { return isCustomer() && myCustomerId() == cid; }
 
+    // Invite links: each link works once and only gives the role Jace picked.
+    function invitePath(code) { return /databases/$(database)/documents/invites/$(code); }
+    function custPath(cid) { return /databases/$(database)/documents/customers/$(cid); }
+    function inv(code) { return get(invitePath(code)).data; }
+    function redeeming(code) {
+      return signedIn() && code is string && exists(invitePath(code))
+        && inv(code).get('usedBy', null) == null
+        && getAfter(invitePath(code)).data.usedBy == myEmail();
+    }
+    function validJoin(d) {
+      return redeeming(d.invite)
+        && d.keys().hasOnly(['name', 'role', 'customerId', 'invite'])
+        && d.name is string && d.name.size() > 0 && d.name.size() < 80
+        && d.role == inv(d.invite).role && d.role in ['customer', 'crew']
+        && (
+          (inv(d.invite).get('customerId', null) != null && d.get('customerId', null) == inv(d.invite).customerId)
+          || (inv(d.invite).get('customerId', null) == null && d.role == 'crew' && !d.keys().hasAny(['customerId']))
+          || (inv(d.invite).get('customerId', null) == null && d.role == 'customer' && d.customerId is string
+              && !exists(custPath(d.customerId)) && existsAfter(custPath(d.customerId)))
+        );
+    }
+    match /invites/{code} {
+      allow read, write: if isAdmin();
+      allow get: if signedIn();
+      allow update: if signedIn() && resource.data.get('usedBy', null) == null
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['usedBy', 'usedAt', 'name'])
+        && request.resource.data.usedBy == myEmail()
+        && !exists(userPath(myEmail()))
+        && getAfter(userPath(myEmail())).data.invite == code;
+    }
+
     // One-time setup: the first signed-in person becomes the admin.
     match /meta/setup {
       allow read: if signedIn();
@@ -31,6 +62,8 @@ service cloud.firestore {
         && getAfter(setupPath()).data.owner == myEmail()
         && request.resource.data.role == 'admin';
       allow create, update, delete: if isAdmin() && email != myEmail();
+      // Joining with an invite link.
+      allow create: if signedIn() && email == myEmail() && validJoin(request.resource.data);
     }
 
     // Business settings (payment info, messages): everyone with an account reads, admin changes.
@@ -40,6 +73,14 @@ service cloud.firestore {
     match /customers/{cid} {
       allow read: if isStaff() || ownsCustomer(cid);
       allow write: if isAdmin();
+      // A new customer joining with an invite link creates a bare record with just their name.
+      allow create: if signedIn() && !exists(userPath(myEmail()))
+        && getAfter(userPath(myEmail())).data.get('customerId', null) == cid
+        && redeeming(getAfter(userPath(myEmail())).data.invite)
+        && inv(getAfter(userPath(myEmail())).data.invite).get('customerId', null) == null
+        && request.resource.data.keys().hasOnly(['name', 'email', 'phone', 'address', 'deck', 'active', 'grass', 'grassPlan', 'snow', 'snowPlan', 'createdAt', 'joinedViaInvite'])
+        && request.resource.data.email == myEmail()
+        && request.resource.data.grass == false && request.resource.data.snow == false;
     }
     // Private notes: crew and admin only.
     match /notes/{cid} { allow read: if isStaff(); allow write: if isAdmin(); }
