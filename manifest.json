@@ -1,0 +1,9 @@
+{
+  "name": "Precision Cut Lawns",
+  "short_name": "Precision Cut",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#183723",
+  "theme_color": "#183723",
+  "icons": [{ "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }]
+}

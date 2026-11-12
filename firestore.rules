@@ -1,0 +1,87 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+    function myEmail() { return request.auth.token.email.lower(); }
+    function userPath(email) { return /databases/$(database)/documents/users/$(email); }
+    function setupPath() { return /databases/$(database)/documents/meta/setup; }
+    function hasAccount() { return signedIn() && exists(userPath(myEmail())); }
+    function me() { return get(userPath(myEmail())).data; }
+    function isAdmin() { return hasAccount() && me().role == 'admin'; }
+    function isStaff() { return hasAccount() && me().role in ['admin', 'crew']; }
+    function isCustomer() { return hasAccount() && me().role == 'customer'; }
+    function myCustomerId() { return me().customerId; }
+    function ownsCustomer(cid) { return isCustomer() && myCustomerId() == cid; }
+
+    // One-time setup: the first signed-in person becomes the admin.
+    match /meta/setup {
+      allow read: if signedIn();
+      allow create: if signedIn() && !exists(setupPath())
+        && request.resource.data.owner == myEmail()
+        && existsAfter(userPath(myEmail()));
+    }
+
+    // Accounts: only emails on this list get in. Admin manages it.
+    match /users/{email} {
+      allow read: if (signedIn() && email == myEmail()) || isAdmin();
+      allow create: if signedIn() && email == myEmail() && !exists(setupPath())
+        && getAfter(setupPath()).data.owner == myEmail()
+        && request.resource.data.role == 'admin';
+      allow create, update, delete: if isAdmin() && email != myEmail();
+    }
+
+    // Business settings (payment info, messages): everyone with an account reads, admin changes.
+    match /settings/{id} { allow read: if hasAccount(); allow write: if isAdmin(); }
+
+    // Customer info: crew and admin see all; a customer sees only their own.
+    match /customers/{cid} {
+      allow read: if isStaff() || ownsCustomer(cid);
+      allow write: if isAdmin();
+    }
+    // Private notes: crew and admin only.
+    match /notes/{cid} { allow read: if isStaff(); allow write: if isAdmin(); }
+    // Prices: admin, and the customer for their own.
+    match /pricing/{cid} {
+      allow read: if isAdmin() || ownsCustomer(cid);
+      allow write: if isAdmin();
+    }
+
+    // Route stops. Crew and admin manage them. A customer can read their own
+    // and can only turn their own stop into a skip (before it's done).
+    match /stops/{id} {
+      allow read: if isStaff() || ownsCustomer(resource.data.customerId);
+      allow write: if isStaff();
+      allow create: if ownsCustomer(request.resource.data.customerId)
+        && request.resource.data.status == 'skipped' && request.resource.data.skippedBy == 'customer';
+      allow update: if ownsCustomer(resource.data.customerId)
+        && resource.data.status == 'scheduled'
+        && request.resource.data.status == 'skipped' && request.resource.data.skippedBy == 'customer'
+        && request.resource.data.customerId == resource.data.customerId;
+    }
+
+    // Invoices. Admin manages them. A customer reads their own and can only tap "I've paid".
+    match /visits/{id} {
+      allow read: if isAdmin() || ownsCustomer(resource.data.customerId);
+      allow write: if isAdmin();
+      allow update: if ownsCustomer(resource.data.customerId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['customerSaysPaid', 'customerSaysPaidAt']);
+    }
+
+    // Requests and messages from customers (snow removal, mow requests, notes to Jace).
+    match /requests/{id} {
+      allow read: if isStaff() || ownsCustomer(resource.data.customerId);
+      allow create: if isStaff() || ownsCustomer(request.resource.data.customerId);
+      allow update, delete: if isStaff();
+    }
+
+    // Admin only.
+    match /expenses/{id} { allow read, write: if isAdmin(); }
+    match /addons/{id}   { allow read, write: if isAdmin(); }
+    match /quotes/{id}   { allow read, write: if isAdmin(); }
+
+    // Everything else is closed.
+  }
+}
