@@ -1,6 +1,6 @@
 PRECISION CUT APP - PHONE SETUP (about 15 minutes, all free)
 
-App link: https://dbc-jace.github.io/Precision-Cut-App/
+App link: https://app.precisioncutlawns.org/
 Until step 7 is done, the app runs in demo mode (no login, data on that phone only). Try it out, but don't enter real customers yet.
 
 Tip: if a Firebase page looks cramped, tap "aA" in Safari's address bar, then "Request Desktop Website".
@@ -30,7 +30,7 @@ Tip: if a Firebase page looks cramped, tap "aA" in Safari's address bar, then "R
 
 5. ALLOW THE APP'S WEBSITE
    - Still in Authentication: Settings tab > Authorized domains > Add domain
-   - Type: dbc-jace.github.io   > Add
+   - Type: app.precisioncutlawns.org   > Add
 
 6. GET THE APP'S KEYS
    - Tap the gear icon (top of menu) > Project settings
@@ -50,7 +50,7 @@ Tip: if a Firebase page looks cramped, tap "aA" in Safari's address bar, then "R
 
 == PART 2: FIRST SIGN-IN (do this right away) ==
 
-8. Open https://dbc-jace.github.io/Precision-Cut-App/
+8. Open https://app.precisioncutlawns.org/
    - Tap "Sign in with Google" using the account you want to be the admin.
    - You'll see "Set up as admin". Tap it right away. The first person to do this becomes the admin.
 
