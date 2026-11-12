@@ -63,7 +63,7 @@ const state = {
   loaded: new Set(),
   customers: [], notes: [], pricing: [], stops: [], visits: [], requests: [], expenses: [], addons: [], quotes: [], users: [], settingsDoc: null,
   tab: 'route', routeSeg: 'grass', week: weekStart(new Date()), snowDate: today(),
-  custId: null, editing: false, q: '', moneyTab: 'overview', quoteId: null, quoteSel: [], settingsSeg: 'main',
+  custId: null, editing: false, q: '', moneyTab: 'overview', quoteId: null, quoteSel: [], openFolds: new Set(),
   sheet: null, locked: false, showPaidHistory: false,
 };
 let store;
@@ -341,7 +341,10 @@ function stopCard(r, kind) {
     action = `<div class="between"><span class="muted">${stop.skippedBy === 'customer' ? 'Customer skipped' : 'Skipped'}${stop.skippedAt ? ' · ' + shortDate(ymd(new Date(stop.skippedAt))) : ''}</span>
       ${admin ? `<button class="link" data-a="unskip" data-id="${r.id}">Undo skip</button>` : ''}</div>`;
   }
-  const plan = kind === 'snow' ? (c.snowPlan === 'seasonal' ? 'Seasonal' : 'Per snow') : ({ weekly: 'Weekly', biweekly: 'Every 2 wks', oncall: 'On call' }[c.grassPlan] || '');
+  const sameDay = kind === 'snow' ? snowStops(c.id, stop.date) : [];
+  if (kind === 'snow' && r.status === 'done' && !sameDay.some((s) => s.status === 'scheduled') && (stop.visit || 1) === Math.max(...sameDay.map((s) => s.visit || 1)))
+    action += `<button class="btn btn-ghost btn-sm" data-a="snowAgain" data-cid="${c.id}">+ Clean again today</button>`;
+  const plan = kind === 'snow' ? (c.snowPlan === 'seasonal' ? 'Seasonal' : 'Per snow') + ((stop?.visit || 1) > 1 ? ` · Visit ${stop.visit}` : '') : ({ weekly: 'Weekly', biweekly: 'Every 2 wks', oncall: 'On call' }[c.grassPlan] || '');
   return `<div class="card ${r.status === 'done' ? 'done' : ''}" style="gap:8px">
     <div class="between"><button class="plain grow" data-a="openCust" data-id="${c.id}"><div class="b" style="font-size:16px">${esc(c.name)}</div></button>${pill(r.status === 'skipped' ? 'p-gray' : 'p-blue', plan)}</div>
     ${c.address ? `<a href="https://maps.apple.com/?q=${encodeURIComponent(c.address)}" class="muted">${esc(c.address)}</a>` : ''}
@@ -374,8 +377,8 @@ function viewRoute() {
       ${skipped.length ? `<div class="sec">Skipped</div>${skipped.map((r) => stopCard(r, 'grass')).join('')}` : ''}
       ${!rows.length ? '<div class="card empty">Nothing on the route this week.</div>' : ''}`;
   } else if (state.routeSeg === 'snow') {
-    const rows = state.customers.map((c) => ({ c, stop: stopOf(`snow_${state.snowDate}_${c.id}`), id: `snow_${state.snowDate}_${c.id}` }))
-      .filter((r) => r.stop).map((r) => ({ ...r, status: r.stop.status })).sort((a, b) => byName(a.c, b.c));
+    const rows = state.stops.filter((s) => s.type === 'snow' && s.date === state.snowDate && cust(s.customerId))
+      .map((s) => ({ c: cust(s.customerId), stop: s, id: s.id, status: s.status })).sort((a, b) => byName(a.c, b.c) || (a.stop.visit || 1) - (b.stop.visit || 1));
     const snowReq = openReq.filter((r) => r.type === 'snow');
     body = `<label class="f"><span class="lbl">Snow day</span><input class="inp" type="date" value="${state.snowDate}" data-change="snowDate"></label>
       ${isAdmin() ? `<div class="card"><div class="b">Start snow day</div><div class="muted small">Adds every seasonal snow customer${snowReq.length ? ` and the ${snowReq.length} open snow request${snowReq.length === 1 ? '' : 's'}` : ''} to this day's list.</div>
@@ -554,54 +557,49 @@ function viewSettings() {
   const field = (k, label, ph = '', area = false) => area
     ? `<label class="f"><span class="lbl">${label}</span><textarea class="inp" data-setting="${k}" placeholder="${esc(ph)}">${esc(s[k])}</textarea></label>`
     : `<label class="f"><span class="lbl">${label}</span><input class="inp" data-setting="${k}" value="${esc(s[k])}" placeholder="${esc(ph)}"></label>`;
-  const seg = (k, l) => `<button class="${state.settingsSeg === k ? 'on' : ''}" data-a="settingsSeg" data-v="${k}">${l}</button>`;
+  // Every section folds; which ones are open is remembered while the app is open.
+  const fold = (key, title, hint, inner, nested = false) => `<details class="fold${nested ? ' nested' : ''}" data-fold="${key}" ${state.openFolds.has(key) ? 'open' : ''}>
+    <summary><div class="grow"><div class="b">${title}</div>${hint ? `<div class="muted small">${hint}</div>` : ''}</div><span class="chev" aria-hidden="true">›</span></summary>
+    <div class="fold-body">${inner}</div></details>`;
   const lock = lockCfg();
-  let body = '';
-  if (state.settingsSeg === 'main') {
-    body = `<div class="sec">Add-ons</div>
-      <div class="card"><div class="muted">Extras you can add when you mark a job done, or on a quote. You can change the price each time.</div>
-        ${state.addons.length ? `<div class="card list" style="border:0;padding:0">${[...state.addons].sort(byName).map((a) => `<div class="line"><span class="b">${esc(a.name)}</span><span class="flex"><span>${money(a.price)}</span><button class="link danger" style="min-height:32px" data-a="delAddon" data-id="${a.id}">Remove</button></span></div>`).join('')}</div>` : '<div class="b">No add-ons yet.</div>'}
-        <div style="display:grid;grid-template-columns:2fr 1fr;gap:8px"><label><span class="sr">Add-on name</span><input class="inp" id="a_name" placeholder="e.g. Edge sidewalk"></label>
-          <label><span class="sr">Default price</span><input class="inp" id="a_price" inputmode="decimal" placeholder="$"></label></div>
-        <button class="btn btn-ghost" data-a="addAddon">+ Create add-on</button></div>
-      <div class="sec">Payments</div>
-      <div class="card">${field('zelle', 'Zelle (phone or email)')}
-        <div><div class="lbl">Zelle QR code</div>${s.zelleQr ? `<div class="qr"><img src="${esc(s.zelleQr)}" alt="Zelle QR code"></div><button class="link danger" data-a="removeZelleQr">Remove QR</button>` : '<div class="muted small">Save your QR from your bank app’s Zelle screen, then upload it here.</div>'}
-          <label class="btn btn-ghost full" style="margin-top:6px">Upload Zelle QR<input type="file" accept="image/*" data-change="zelleQr" class="sr"></label></div>
-        ${field('venmo', 'Venmo link (business)', 'e.g. venmo.com/u/PrecisionCutLawns')}
-        <div class="muted small">Customers see these with a QR code and a Pay button in their account. Venmo shows once it’s filled in.</div></div>
-      <div class="sec">Business info</div>
-      <div class="card">${field('businessPhone', 'Phone on quotes and invoices')}${field('website', 'Website link', 'Add your website')}</div>
-      <div class="sec">Skips</div>
-      <div class="card"><div class="muted small">Customers get 1 free skip a month. They can skip until:</div>
-        <div class="grid2"><label class="f"><span class="lbl">Day</span><select class="inp" data-setting="skipDay">${DAYS.map((d, i) => `<option value="${i}" ${Number(s.skipDay) === i ? 'selected' : ''}>${d}</option>`).join('')}</select></label>
-          <label class="f"><span class="lbl">Time</span><input class="inp" type="time" data-setting="skipTime" value="${esc(s.skipTime)}"></label></div></div>
-      <div class="sec">Security (this phone)</div>
-      <div class="card"><div class="muted small">Ask for a 4-digit passcode when the app opens or sits idle, even while you stay signed in.</div>
-        ${lock ? `<div class="between"><span>Passcode lock is <b>on</b> · locks after ${lock.minutes} min</span></div>
-          <div class="flex"><button class="btn btn-ghost grow" data-a="setLock">Change</button><button class="btn btn-danger grow" data-a="clearLock">Turn off</button></div>` : '<button class="btn btn-primary" data-a="setLock">Turn on passcode lock</button>'}</div>
-      <div class="sec">Backup</div>
-      <div class="card"><div class="muted small">Your data is saved in Firebase automatically. Download a full copy now and then to keep on your phone or computer.</div>
-        <button class="btn btn-ghost" data-a="backup">Download backup</button></div>
-      <div class="muted small center">Version ${APP_VERSION}</div>`;
-  } else if (state.settingsSeg === 'messages') {
-    body = `<div class="card"><div class="muted small">Fill-ins: {first} first name, {total}, {zelle}, {venmo}, {link} app link, {week}, {deadline}, {phone}, {date}, {email}.</div>
-        ${field('reminderMsg', 'Weekly reminder (Wednesdays)', '', true)}${field('oncallMsg', 'On-call text', '', true)}${field('invoiceMsg', 'Invoice text', '', true)}
-        <label class="check"><input type="checkbox" data-setting="receiptEnabled" ${s.receiptEnabled ? 'checked' : ''}> Offer a receipt text when I mark Paid</label>
-        ${field('receiptMsg', 'Receipt text', '', true)}${field('quoteMsg', 'Quote text', '', true)}
-        ${field('welcomeCustomer', 'Customer welcome', '', true)}${field('welcomeCrew', 'Crew welcome', '', true)}</div>`;
-  } else {
-    const users = [...state.users].sort((a, b) => ({ admin: 0, crew: 1, customer: 2 }[a.role] - { admin: 0, crew: 1, customer: 2 }[b.role]) || byName(a, b));
-    body = `<div class="card"><div class="b">Add a crew member</div>
-        <label class="f"><span class="lbl">Name</span><input class="inp" id="u_name"></label>
-        <label class="f"><span class="lbl">Email (they sign in with this)</span><input class="inp" id="u_email" type="email" autocapitalize="off"></label>
-        <button class="btn btn-primary" data-a="addCrew">Add &amp; send welcome</button>
-        <div class="muted small">Customers are invited from their page in Customers.</div></div>
-      <div class="card list">${users.map((u) => `<div class="line"><div class="grow"><div class="b">${esc(u.name)}</div><div class="muted small">${esc(u.id)}</div></div>
+  const addons = [...state.addons].sort(byName);
+  const users = [...state.users].filter((u) => !u.id.endsWith('@demo') || u.role !== 'customer')
+    .sort((a, b) => ({ admin: 0, crew: 1, customer: 2 }[a.role] - { admin: 0, crew: 1, customer: 2 }[b.role]) || byName(a, b));
+  const msg = (k, title, hint) => fold('msg_' + k, title, hint, field(k, 'Text', '', true), true);
+  return [
+    fold('addons', 'Add-ons', `${addons.length} saved`, `<div class="muted">Extras you can add when you mark a job done, or on a quote. You can change the price each time.</div>
+      ${addons.length ? `<div class="card list" style="border:0;padding:0">${addons.map((a) => `<div class="line"><span class="b">${esc(a.name)}</span><span class="flex"><span>${money(a.price)}</span><button class="link danger" style="min-height:32px" data-a="delAddon" data-id="${a.id}">Remove</button></span></div>`).join('')}</div>` : '<div class="b">No add-ons yet.</div>'}
+      <div style="display:grid;grid-template-columns:2fr 1fr;gap:8px"><label><span class="sr">Add-on name</span><input class="inp" id="a_name" placeholder="e.g. Edge sidewalk"></label>
+        <label><span class="sr">Default price</span><input class="inp" id="a_price" inputmode="decimal" placeholder="$"></label></div>
+      <button class="btn btn-ghost" data-a="addAddon">+ Create add-on</button>`),
+    fold('payments', 'Payments', `Zelle${s.zelleQr ? ' + QR' : ''}${s.venmo ? ', Venmo' : ''}`, `${field('zelle', 'Zelle (phone or email)')}
+      <div><div class="lbl">Zelle QR code</div>${s.zelleQr ? `<div class="qr"><img src="${esc(s.zelleQr)}" alt="Zelle QR code"></div><button class="link danger" data-a="removeZelleQr">Remove QR</button>` : '<div class="muted small">Save your QR from your bank app’s Zelle screen, then upload it here.</div>'}
+        <label class="btn btn-ghost full" style="margin-top:6px">Upload Zelle QR<input type="file" accept="image/*" data-change="zelleQr" class="sr"></label></div>
+      ${field('venmo', 'Venmo link (business)', 'e.g. venmo.com/u/PrecisionCutLawns')}
+      <div class="muted small">Customers see these with a QR code and a Pay button in their account. Venmo shows once it’s filled in.</div>`),
+    fold('business', 'Business info', esc(s.businessPhone), `${field('businessPhone', 'Phone on quotes and invoices')}${field('website', 'Website link', 'Add your website')}`),
+    fold('skips', 'Skips', `Deadline: ${esc(deadlineText(weekStart(new Date())))}`, `<div class="muted small">Customers get 1 free skip a month. They can skip until:</div>
+      <div class="grid2"><label class="f"><span class="lbl">Day</span><select class="inp" data-setting="skipDay">${DAYS.map((d, i) => `<option value="${i}" ${Number(s.skipDay) === i ? 'selected' : ''}>${d}</option>`).join('')}</select></label>
+        <label class="f"><span class="lbl">Time</span><input class="inp" type="time" data-setting="skipTime" value="${esc(s.skipTime)}"></label></div>`),
+    fold('messages', 'Messages', 'The texts the app writes for you', `<div class="muted small">Fill-ins: {first} first name, {total}, {zelle}, {venmo}, {link} app link, {week}, {deadline}, {phone}, {date}, {email}.</div>
+      ${msg('reminderMsg', 'Weekly reminder', 'Wednesdays, with the skip link')}${msg('oncallMsg', 'On-call text', '“Would you like your grass cut today?”')}
+      ${msg('invoiceMsg', 'Invoice text', 'Sent with the PDF')}
+      ${fold('msg_receipt', 'Receipt text', s.receiptEnabled ? 'On' : 'Off', `<label class="check"><input type="checkbox" data-setting="receiptEnabled" ${s.receiptEnabled ? 'checked' : ''}> Offer a receipt text when I mark Paid</label>${field('receiptMsg', 'Text', '', true)}`, true)}
+      ${msg('quoteMsg', 'Quote text', 'Sent with the quote PDF')}${msg('welcomeCustomer', 'Customer welcome', 'Sent with their invite')}${msg('welcomeCrew', 'Crew welcome', 'Sent with their invite')}`),
+    fold('users', 'Users', `${users.length} with access`, `<div class="b">Add a crew member</div>
+      <label class="f"><span class="lbl">Name</span><input class="inp" id="u_name"></label>
+      <label class="f"><span class="lbl">Email (they sign in with this)</span><input class="inp" id="u_email" type="email" autocapitalize="off"></label>
+      <button class="btn btn-primary" data-a="addCrew">Add &amp; send welcome</button>
+      <div class="muted small">Customers are invited from their page in Customers.</div>
+      <div class="card list" style="padding:0 0 0 0;border:0">${users.map((u) => `<div class="line"><div class="grow"><div class="b">${esc(u.name)}</div><div class="muted small">${esc(u.id)}</div></div>
         ${pill(u.role === 'admin' ? 'p-green' : u.role === 'crew' ? 'p-blue' : 'p-gray', u.role[0].toUpperCase() + u.role.slice(1))}
-        ${u.id !== state.user.email ? `<button class="link danger" style="margin-left:10px;min-height:32px" data-a="removeUser" data-email="${esc(u.id)}">Remove</button>` : ''}</div>`).join('')}</div>`;
-  }
-  return `<div class="seg">${seg('main', 'General')}${seg('messages', 'Messages')}${seg('users', 'Users')}</div>${body}`;
+        ${u.id !== state.user.email ? `<button class="link danger" style="margin-left:10px;min-height:32px" data-a="removeUser" data-email="${esc(u.id)}">Remove</button>` : ''}</div>`).join('')}</div>`),
+    fold('security', 'Security (this phone)', lock ? `Passcode lock on · ${lock.minutes} min` : 'Passcode lock off', `<div class="muted small">Ask for a 4-digit passcode when the app opens or sits idle, even while you stay signed in.</div>
+      ${lock ? `<div class="flex"><button class="btn btn-ghost grow" data-a="setLock">Change</button><button class="btn btn-danger grow" data-a="clearLock">Turn off</button></div>` : '<button class="btn btn-primary" data-a="setLock">Turn on passcode lock</button>'}`),
+    fold('backup', 'Backup', 'Download a full copy', `<div class="muted small">Your data is saved in Firebase automatically. Download a full copy now and then to keep on your phone or computer.</div>
+      <button class="btn btn-ghost" data-a="backup">Download backup</button>`),
+    `<div class="muted small center">Version ${APP_VERSION}</div>`,
+  ].join('');
 }
 
 /* ----- Customer home ----- */
@@ -755,6 +753,16 @@ function renderSheet() {
   }
   sheetEl.innerHTML = `<div class="shade" data-a="closeSheet"><div class="panel" data-stop>${inner}</div></div>`;
 }
+// Snow stops: one per visit, so a driveway can be cleared (and billed) more than once a day.
+const snowStops = (cid, date) => state.stops.filter((s) => s.type === 'snow' && s.customerId === cid && s.date === date);
+function addSnowStop(cid, date) {
+  const existing = snowStops(cid, date);
+  if (existing.some((s) => s.status === 'scheduled')) return false; // already waiting on the list
+  const visit = existing.length + 1;
+  store.set('stops', `snow_${date}_${cid}${visit > 1 ? '_' + visit : ''}`, { customerId: cid, type: 'snow', status: 'scheduled', date, visit, weekId: weekStart(parseYmd(date)) });
+  return true;
+}
+const snowDesc = (stop) => 'Snow removal' + ((stop?.visit || 1) > 1 ? ` - visit ${stop.visit}` : '');
 const openText = (title, body, phone) => { state.sheet = { kind: 'text', title, body, phone }; renderSheet(); };
 
 /* ---------- actions ---------- */
@@ -764,7 +772,6 @@ const A = {
   week(el) { state.week = shiftWeek(state.week, Number(el.dataset.n)); render(); },
   thisWeek() { state.week = weekStart(new Date()); render(); },
   moneyTab(el) { state.moneyTab = el.dataset.v; render(); scrollTo(0, 0); },
-  settingsSeg(el) { state.settingsSeg = el.dataset.v; render(); },
   closeSheet() { state.sheet = null; renderSheet(); },
 
   // Route
@@ -774,14 +781,14 @@ const A = {
     const stopData = { customerId: c.id, type: kind, status: 'done', doneAt: Date.now(), doneByName: state.account.name || '', weekId: kind === 'snow' ? weekStart(parseYmd(state.snowDate)) : state.week, ...(kind === 'snow' ? { date: state.snowDate } : {}) };
     if (!isAdmin() || seasonal) { store.update('stops', el.dataset.id, stopData); toast(seasonal ? 'Done (seasonal, no bill)' : 'Marked done'); return; }
     const base = kind === 'snow' ? num(priceOf(c.id).snow) : num(priceOf(c.id).grass);
-    state.sheet = { kind: 'done', cid: c.id, stopId: el.dataset.id, stopData, type: kind, base, price: String(base), sel: [], desc: kind === 'snow' ? 'Snow removal' : 'Lawn mowing' };
+    state.sheet = { kind: 'done', cid: c.id, stopId: el.dataset.id, stopData, type: kind, base, price: String(base), sel: [], desc: kind === 'snow' ? snowDesc(stopOf(el.dataset.id)) : 'Lawn mowing' };
     renderSheet();
   },
   billStop(el) {
     const c = cust(el.dataset.cid), kind = el.dataset.kind;
     const base = kind === 'snow' ? num(priceOf(c.id).snow) : num(priceOf(c.id).grass);
     const stop = stopOf(el.dataset.id);
-    state.sheet = { kind: 'done', cid: c.id, stopId: el.dataset.id, stopData: { status: 'done' }, type: kind, base, price: String(base), sel: [], desc: kind === 'snow' ? 'Snow removal' : 'Lawn mowing', date: stop?.date || (stop?.doneAt ? ymd(new Date(stop.doneAt)) : today()) };
+    state.sheet = { kind: 'done', cid: c.id, stopId: el.dataset.id, stopData: { status: 'done' }, type: kind, base, price: String(base), sel: [], desc: kind === 'snow' ? snowDesc(stop) : 'Lawn mowing', date: stop?.date || (stop?.doneAt ? ymd(new Date(stop.doneAt)) : today()) };
     renderSheet();
   },
   otherWork(el) {
@@ -811,19 +818,21 @@ const A = {
   openOncall() { state.sheet = { kind: 'oncall' }; renderSheet(); },
   oncallYes(el) { store.set('stops', `${state.week}_${el.dataset.cid}`, { customerId: el.dataset.cid, weekId: state.week, type: 'grass', status: 'scheduled' }); toast('Added to this week'); },
   startSnow() {
-    const date = state.snowDate, wk = weekStart(parseYmd(date));
+    const date = state.snowDate;
     let n = 0;
+    // Seasonal customers once per snow day (use "Clean again" for repeat visits).
     for (const c of state.customers.filter((x) => x.active && x.snow && x.snowPlan === 'seasonal')) {
-      const id = `snow_${date}_${c.id}`; if (!stopOf(id)) { store.set('stops', id, { customerId: c.id, type: 'snow', status: 'scheduled', date, weekId: wk }); n++; }
+      if (!snowStops(c.id, date).length && addSnowStop(c.id, date)) n++;
     }
     for (const r of state.requests.filter((x) => x.type === 'snow' && x.status !== 'done')) {
-      const id = `snow_${date}_${r.customerId}`; if (!stopOf(id)) { store.set('stops', id, { customerId: r.customerId, type: 'snow', status: 'scheduled', date, weekId: wk }); n++; }
+      if (addSnowStop(r.customerId, date)) n++;
       store.update('requests', r.id, { status: 'done', handledAt: Date.now() });
     }
     toast(n ? `${n} added to the snow list` : 'Everyone is already on the list');
   },
+  snowAgain(el) { addSnowStop(el.dataset.cid, state.snowDate); toast('Added another visit'); },
   reqToSnow(el) { state.routeSeg = 'snow'; const r = state.requests.find((x) => x.id === el.dataset.id); const date = state.snowDate;
-    store.set('stops', `snow_${date}_${r.customerId}`, { customerId: r.customerId, type: 'snow', status: 'scheduled', date, weekId: weekStart(parseYmd(date)) });
+    addSnowStop(r.customerId, date);
     store.update('requests', r.id, { status: 'done', handledAt: Date.now() }); toast('Added to snow day ' + shortDate(date)); },
   reqToWeek(el) { const r = state.requests.find((x) => x.id === el.dataset.id); const wk = weekStart(new Date());
     store.set('stops', `${wk}_${r.customerId}`, { customerId: r.customerId, weekId: wk, type: 'grass', status: 'scheduled' });
@@ -1068,6 +1077,12 @@ document.addEventListener('change', async (ev) => {
     store.update('settings', 'main', { zelleQr: cv.toDataURL('image/png') }); toast('Zelle QR saved');
   }
 });
+
+// Remember which Settings folds are open so a redraw doesn't close them.
+document.addEventListener('toggle', (ev) => {
+  const k = ev.target.dataset?.fold;
+  if (k) ev.target.open ? state.openFolds.add(k) : state.openFolds.delete(k);
+}, true);
 
 /* ---------- start ---------- */
 (async function start() {

@@ -83,5 +83,5 @@ Tip: if a Firebase page looks cramped, tap "aA" in Safari's address bar, then "R
 - PAID: when Zelle/Venmo comes in (or the customer taps "I've paid"), go to Money > Unpaid > Mark paid / Confirm paid. Income updates.
 - EXPENSES: Money > Expenses > add gas, blades, etc.
 - SNOW: per-snow customers tap "Request snow removal" in their account (you'll see it under Route > Requests, and they can text you too).
-  On a snow day: Route > Snow > Start snow day, then Mark done for each. Seasonal customers: bill once up front from their page ("Bill snow season").
+  On a snow day: Route > Snow > Start snow day, then Mark done for each. Cleared a driveway twice? Tap "+ Clean again today" on it (per-snow customers get billed for each visit). Seasonal customers: bill once up front from their page ("Bill snow season").
 - BACKUP: Settings > Download backup now and then.
