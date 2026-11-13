@@ -118,6 +118,10 @@ service cloud.firestore {
       allow read: if isStaff() || ownsCustomer(resource.data.customerId);
       allow create: if isStaff() || ownsCustomer(request.resource.data.customerId);
       allow update, delete: if isStaff();
+      // A customer can reply in their own threads, mark them read, and delete them from their app.
+      allow update: if ownsCustomer(resource.data.customerId)
+        && request.resource.data.customerId == resource.data.customerId
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['replies', 'status', 'custSeenAt', 'custHidden']);
     }
 
     // Admin only.

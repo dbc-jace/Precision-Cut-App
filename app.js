@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.13.10';
+import { createStore, newId } from './store.js?v=2026.11.13.11';
 
-const APP_VERSION = '2026.11.13.10'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.13.11'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -442,6 +442,20 @@ function renderStaff() {
       ${t === 'route' && openReq ? `<span class="badge">${openReq}</span>` : ''}${t === 'money' && saysPaid ? `<span class="badge">${saysPaid}</span>` : ''}</button>`).join('')}</div></nav>`;
 }
 
+/* ----- In-app messages: replies live on the request as a thread ----- */
+// replies: [{ by: 'admin' | 'customer', name, text, at }]. custSeenAt / custHidden are the customer's own.
+const replies = (r) => (Array.isArray(r.replies) ? r.replies : []);
+const lastAt = (r) => Math.max(r.at || 0, ...replies(r).map((x) => x.at || 0));
+const unreadForCust = (r) => !r.custHidden && replies(r).some((x) => x.by === 'admin' && x.at > (r.custSeenAt || 0));
+const REQ_LABEL = { snow: 'Snow request', mow: 'Mow request', message: 'Message' };
+function threadHtml(r, viewer) {
+  const who = (x) => x.by === viewer ? 'You' : x.by === 'admin' ? (x.name || 'Jace') : (cust(r.customerId)?.name || r.customerName || 'Customer');
+  const opening = r.text || (!r.fromAdmin && r.type !== 'message' ? { mow: 'Asked for a mow', snow: 'Asked for snow removal' }[r.type] : '');
+  const msgs = [...(opening ? [{ by: r.fromAdmin ? 'admin' : 'customer', text: opening, at: r.at }] : []), ...replies(r)];
+  return msgs.map((x) => `<div class="bubble ${x.by === viewer ? 'me' : ''}"><div class="muted small">${esc(who(x))} · ${new Date(x.at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</div>
+    <div style="white-space:pre-line;overflow-wrap:anywhere">${esc(x.text)}</div></div>`).join('');
+}
+
 /* ----- Route (admin + crew) ----- */
 // Who's automatically on a week's route. Only in mowing season, and never before they became a customer.
 // Every-2-weeks customers start right away (first week as a customer, or the first week of the season),
@@ -541,14 +555,14 @@ function viewRoute() {
         <button class="btn btn-primary" data-a="startSnow">Start snow day</button></div>` : ''}
       ${rows.length ? rows.map((r) => stopCard(r, 'snow')).join('') : '<div class="card empty">No snow stops for this day yet.</div>'}`;
   } else {
-    const all = [...state.requests].sort((a, b) => (a.status === 'done') - (b.status === 'done') || b.at - a.at).slice(0, 60);
+    const all = [...state.requests].sort((a, b) => (a.status === 'done') - (b.status === 'done') || lastAt(b) - lastAt(a)).slice(0, 60);
     const handled = state.requests.filter((r) => r.status === 'done').length;
     body = (handled ? `<div class="between"><span class="muted small">${handled} handled</span><button class="link danger" style="min-height:32px" data-a="reqClearDone">Delete all handled</button></div>` : '')
       + (all.length ? all.map((r) => {
       const c = cust(r.customerId);
-      return `<div class="card" style="${r.status === 'done' ? 'opacity:.6' : ''}"><div class="between"><div class="b">${esc(c?.name || r.customerName)}</div>${pill(r.type === 'snow' ? 'p-blue' : r.type === 'mow' ? 'p-green' : 'p-orange', { snow: 'Snow request', mow: 'Mow request', message: 'Message' }[r.type])}</div>
-        <div class="muted small">${new Date(r.at).toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</div>
-        ${r.text ? `<div style="white-space:pre-line">${esc(r.text)}</div>` : ''}
+      return `<div class="card" style="${r.status === 'done' ? 'opacity:.6' : ''}"><div class="between"><div class="b">${esc(c?.name || r.customerName)}</div>${pill(r.type === 'snow' ? 'p-blue' : r.type === 'mow' ? 'p-green' : 'p-orange', r.fromAdmin ? 'You sent' : REQ_LABEL[r.type])}</div>
+        ${threadHtml(r, 'admin')}${r.custHidden ? '<div class="muted small">The customer deleted this from their app.</div>' : ''}
+        ${isAdmin() ? `<button class="btn btn-primary btn-sm" data-a="openReply" data-id="${r.id}">Reply in the app</button>` : ''}
         ${r.status !== 'done' ? `<div class="flex wrap">
           ${r.type === 'snow' ? `<button class="btn btn-lime btn-sm" data-a="reqToSnow" data-id="${r.id}">Add to snow day</button>` : ''}
           ${r.type === 'mow' ? `<button class="btn btn-lime btn-sm" data-a="reqToWeek" data-id="${r.id}">Add to this week</button>` : ''}
@@ -585,6 +599,7 @@ function viewCustomer() {
     <div class="card"><div class="between"><div class="b" style="font-size:20px">${esc(c.name)}</div>${admin ? '<button class="btn btn-ghost btn-sm" data-a="editCust">Edit</button>' : ''}</div>
       <div><div class="lbl">Phone</div><div>${c.phone ? `<a href="tel:+1${firstPhone(c.phone)}">${esc(c.phone)}</a> · <a href="${smsHref(c.phone, '')}">Text</a>` : '—'}</div></div>
       ${admin && c.phone ? `<button class="btn btn-ghost" data-a="pickMsg" data-cid="${c.id}">Send a saved message</button>` : ''}
+      ${admin && userForCustomer(c.id) ? `<button class="btn btn-ghost" data-a="openReply" data-cid="${c.id}">Message in the app</button>` : ''}
       <div><div class="lbl">Address</div><div>${c.address ? `<a href="https://maps.apple.com/?q=${encodeURIComponent(c.address)}">${esc(c.address)}</a>` : '—'}</div></div>
       ${admin && c.email ? `<div><div class="lbl">Email</div><div>${esc(c.email)}</div></div>` : ''}
       <div class="grid2"><div><div class="lbl">Deck height</div><div>${esc(c.deck || '—')}</div></div><div><div class="lbl">Status</div><div>${c.active ? 'Active' : 'Paused'}</div></div></div>
@@ -837,6 +852,8 @@ function renderCustomerHome() {
   const paid = state.visits.filter((v) => v.paid).sort((a, b) => b.date.localeCompare(a.date));
   const openSnow = state.requests.find((r) => r.type === 'snow' && r.status !== 'done');
   const openMow = state.requests.find((r) => r.type === 'mow' && r.status !== 'done');
+  const myMsgs = state.requests.filter((r) => !r.custHidden).sort((a, b) => lastAt(b) - lastAt(a));
+  const newMsgs = myMsgs.filter(unreadForCust).length;
   const venmoUrl = s.venmo ? (s.venmo.startsWith('http') ? s.venmo : 'https://' + s.venmo) : '';
   let grassCard = '';
   if (c.grass && c.active && !grassWeek(wk) && !stop) {
@@ -868,6 +885,7 @@ function renderCustomerHome() {
     <header class="top"><div class="top-row">${brand()}<button class="link" data-a="signOut">Sign out</button></div>
       <h1>Hi ${esc(first(c.name))}!</h1><div class="sub">${esc(c.address || '')}</div></header>
     <main class="no-tabs">
+      ${newMsgs ? `<a class="okbar" href="#msgs" style="text-decoration:none">You have ${newMsgs} new message${newMsgs === 1 ? '' : 's'} from Jace. Tap to read.</a>` : ''}
       ${grassCard}${snowCard}
       ${unpaid.length ? `<div class="sec">To pay</div>${unpaid.map((v) => `<div class="card"><div class="between"><div><div class="b">${esc(v.desc || 'Lawn mowing')}</div><div class="muted">${shortDate(v.date)} · ${esc(v.invoiceNo)}</div></div><div class="big">${money(v.total)}</div></div>
           <button class="btn btn-ghost" data-a="custPdf" data-id="${v.id}">View invoice (PDF)</button>
@@ -878,8 +896,13 @@ function renderCustomerHome() {
         <div class="between"><div><div class="b">Zelle</div><div>${esc(s.zelle)}</div></div><button class="btn btn-ghost btn-sm" data-a="copyZelle">Copy</button></div>
         ${s.zelleQr ? `<div class="qr"><img src="${esc(s.zelleQr)}" alt="Zelle QR code"></div><div class="muted small center">Scan with your bank app’s Zelle option.</div>` : '<div class="muted small">Open your bank app, choose Zelle, and send to the number above.</div>'}
       </div>
-      <div class="sec">Message Jace</div>
-      <div class="card"><label class="f"><span class="sr">Message</span><textarea class="inp" id="m_text" placeholder="Questions, gate code changes, anything…"></textarea></label>
+      <div class="sec" id="msgs">Messages${newMsgs ? ` · ${newMsgs} new` : ''}</div>
+      ${myMsgs.map((r) => `<div class="card ${unreadForCust(r) ? 'unread' : ''}"><div class="between"><div class="b">${r.fromAdmin ? 'From Jace' : REQ_LABEL[r.type]}</div>${unreadForCust(r) ? pill('p-green', 'New') : r.status === 'done' && !r.fromAdmin ? pill('p-gray', 'Handled') : ''}</div>
+        ${threadHtml(r, 'customer')}
+        <div class="flex wrap"><button class="btn btn-primary btn-sm" data-a="openReply" data-id="${r.id}">Reply</button>
+          ${unreadForCust(r) ? `<button class="btn btn-ghost btn-sm" data-a="custSeen" data-id="${r.id}">Mark read</button>` : ''}
+          <button class="link danger" style="min-height:32px;margin-left:auto" data-a="custHide" data-id="${r.id}">Delete</button></div></div>`).join('')}
+      <div class="card"><div class="b">Message Jace</div><label class="f"><span class="sr">Message</span><textarea class="inp" id="m_text" placeholder="Questions, gate code changes, anything…"></textarea></label>
         <div class="flex"><button class="btn btn-primary grow" data-a="custRequest" data-type="message">Send in the app</button><a class="btn btn-ghost" href="${smsHref(s.businessPhone, '')}">Text instead</a></div></div>
       ${paid.length ? `<button class="link" data-a="togglePaid">${state.showPaidHistory ? 'Hide' : 'Show'} paid invoices (${paid.length})</button>
         ${state.showPaidHistory ? `<div class="card list">${paid.map((v) => `<div class="line"><div class="grow"><div>${shortDate(v.date)} · ${esc(v.desc || 'Lawn mowing')}</div></div><b>${money(v.total)}</b><button class="link" style="margin-left:10px;min-height:32px" data-a="custPdf" data-id="${v.id}">PDF</button></div>`).join('')}</div>` : ''}` : ''}
@@ -962,6 +985,14 @@ function renderSheet() {
         return `<div class="between" style="border-top:1px solid #ECEDEC;padding-top:10px"><div><div class="b">${esc(r.c.name)}</div>${r.stop?.reminded ? '<div class="muted small">✓ Sent</div>' : ''}</div>
           ${r.c.phone ? `<a class="btn ${r.stop?.reminded ? 'btn-ghost' : 'btn-primary'} btn-sm" href="${smsHref(r.c.phone, body)}" data-a="reminded" data-id="${r.id}" data-cid="${r.c.id}">${r.stop?.reminded ? 'Again' : 'Text'}</a>` : '<span class="muted small">No phone</span>'}</div>`; }).join('')}
       <button class="btn btn-ghost" data-a="closeSheet">Close</button>`;
+  } else if (sh.kind === 'reply') {
+    const r = sh.id && state.requests.find((x) => x.id === sh.id), c = cust(r?.customerId || sh.cid), admin = isAdmin();
+    inner = `<div class="b" style="font-size:20px">${admin ? 'Message ' + esc(c?.name || r?.customerName || '') : 'Reply to Jace'}</div>
+      ${r ? `<div class="flex" style="flex-direction:column;gap:8px;max-height:40vh;overflow:auto">${threadHtml(r, admin ? 'admin' : 'customer')}</div>` : `<div class="muted small">They’ll see it in their app under Messages.</div>`}
+      <label class="f"><span class="sr">Message</span><textarea class="inp" id="rp_text" rows="4" placeholder="Type your message…"></textarea></label>
+      <button class="btn btn-primary" data-a="sendReply">Send</button>
+      ${admin && c?.phone ? '<div class="muted small">After you send, you can text them a heads-up to check the app.</div>' : ''}
+      <button class="btn btn-ghost" data-a="closeSheet">Cancel</button>`;
   } else if (sh.kind === 'addWeek') {
     const on = new Set(grassRoute(state.week).filter((r) => r.status !== 'skipped').map((r) => r.c.id));
     const list = state.customers.filter((c) => c.active && !on.has(c.id)).sort(byName);
@@ -1178,6 +1209,27 @@ const A = {
   reqToWeek(el) { const r = state.requests.find((x) => x.id === el.dataset.id); const wk = weekStart(new Date());
     store.set('stops', `${wk}_${r.customerId}`, { customerId: r.customerId, weekId: wk, type: 'grass', status: 'scheduled' });
     store.update('requests', r.id, { status: 'done', handledAt: Date.now() }); toast('Added to this week'); },
+  openReply(el) { state.sheet = { kind: 'reply', id: el.dataset.id || '', cid: el.dataset.cid || '' }; renderSheet(); document.getElementById('rp_text')?.focus(); },
+  async sendReply() {
+    const sh = state.sheet, text = val('rp_text').trim();
+    if (!text) return toast('Type a message first');
+    const admin = isAdmin(), at = Date.now();
+    const msg = { by: admin ? 'admin' : 'customer', name: admin ? (state.account.name || 'Jace') : (state.customers[0]?.name || ''), text, at };
+    const r = sh.id && state.requests.find((x) => x.id === sh.id);
+    if (r) {
+      // Jace answering a plain message handles it; the customer writing back puts it in Jace's inbox again.
+      const upd = { replies: [...replies(r), msg], ...(admin ? { custHidden: false, ...(r.type === 'message' ? { status: 'done', handledAt: at } : {}) } : { status: 'open', custSeenAt: at }) };
+      await store.update('requests', r.id, upd);
+    } else {
+      const c = cust(sh.cid);
+      store.add('requests', { customerId: c.id, customerName: c.name, type: 'message', fromAdmin: true, text: '', replies: [msg], at, status: 'done' });
+    }
+    const phone = admin && cust(r?.customerId || sh.cid)?.phone;
+    state.sheet = null; renderSheet(); toast(admin ? 'Sent. They’ll see it in their app.' : 'Sent to Jace');
+    if (phone) { openText('Message sent in the app', `Hi ${first(cust(r?.customerId || sh.cid)?.name)}, I sent you a message in the Precision Cut app: ${appLink()}`, phone); state.sheet.title = 'Sent in the app. Text them too?'; renderSheet(); }
+  },
+  custSeen(el) { store.update('requests', el.dataset.id, { custSeenAt: Date.now() }); },
+  custHide(el) { if (!confirm('Delete this message from your app?')) return; store.update('requests', el.dataset.id, { custHidden: true, custSeenAt: Date.now() }); toast('Deleted'); },
   reqDel(el) { if (!confirm('Delete this for good?')) return; store.remove('requests', el.dataset.id); toast('Deleted'); },
   reqClearDone() {
     const done = state.requests.filter((r) => r.status === 'done');
