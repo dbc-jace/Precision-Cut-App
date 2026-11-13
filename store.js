@@ -73,6 +73,7 @@ async function firebaseStore(onError) {
       b.set(fs.doc(db, 'users', email), { name, role: inv.role, invite: code, ...(cid ? { customerId: cid } : {}) });
       b.update(fs.doc(db, 'invites', code), { usedBy: email, usedAt: Date.now(), name });
       await b.commit();
+      return inv.role;
     },
     add(name, data) {
       const ref = fs.doc(fs.collection(db, name));

@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.13.12';
+import { createStore, newId } from './store.js?v=2026.11.13.13';
 
-const APP_VERSION = '2026.11.13.12'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.13.13'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -332,6 +332,7 @@ document.addEventListener('visibilitychange', () => {
 });
 
 /* ---------- data subscriptions ---------- */
+let stuckTimer;
 function subscribe() {
   unsubs.forEach((u) => typeof u === 'function' && u()); unsubs = [];
   state.loaded = new Set();
@@ -349,6 +350,13 @@ function subscribe() {
     ['stops', 'visits', 'requests'].forEach((n) => watch(n, (done) => store.watchWhere(n, 'customerId', cid, onData(n)(done))));
   }
   state.need = need;
+  // Safety net: if their data still hasn't loaded after 10 seconds, refresh once (not again this visit).
+  clearTimeout(stuckTimer);
+  stuckTimer = setTimeout(() => {
+    if (state.access !== 'ok' || state.loaded.size >= state.need.length) return;
+    let tried = false; try { tried = sessionStorage.getItem('pc_autoreload') === '1'; sessionStorage.setItem('pc_autoreload', '1'); } catch {}
+    if (!tried) location.reload();
+  }, 10000);
 }
 // Don't redraw under someone's thumb while they're typing; redraw when they leave the field.
 let pendingRender = false;
@@ -387,7 +395,7 @@ let approvalUnsub = null;
 function waitForApproval() {
   if (approvalUnsub) return;
   approvalUnsub = store.watchDoc('users', state.user.email, (d) => {
-    if (d && state.access === 'none') { approvalUnsub?.(); approvalUnsub = null; state.waiting = null; checkAccess(); }
+    if (d && state.access === 'none') { approvalUnsub?.(); approvalUnsub = null; app.innerHTML = '<p class="center muted" style="padding:40px">Jace let you in! Opening your account…</p>'; location.replace(location.pathname); }
   }, () => {});
 }
 // Ask Jace to let this login in (used when an invite link can't be matched on this phone).
@@ -415,10 +423,10 @@ async function sendAlert(to, subject, fields) {
   // FormSubmit answers 200 with success "false" (e.g. address not activated yet), so check both.
   if (!r.ok || String(body.success) === 'false') throw new Error(`Alert email to ${to} failed (${r.status}): ${body.message || 'no details'}`);
 }
-async function notifyJoined(name, email) {
+async function notifyJoined(name, email, joinedRole) {
   try {
     const owner = settings().alertEmail.trim() || (await store.getDoc('meta', 'setup'))?.owner; if (!owner) return;
-    const role = state.account?.role || 'customer';
+    const role = joinedRole || state.account?.role || 'customer';
     await sendAlert(owner, `New ${role} sign-up: ${name}`, {
       Name: name, Email: email, Role: role, When: new Date().toLocaleString('en-US'),
       'Next step': role === 'customer' ? 'Open the app > Customers > ' + name + ' > Edit to add their phone, address and plans.' : 'They can see the route now.',
@@ -437,6 +445,7 @@ function render() {
   if (state.access === 'join') return renderJoin();
   if (state.access === 'none') return renderNoAccess();
   if (state.access !== 'ok' || (state.need && state.loaded.size < state.need.length)) { app.innerHTML = '<p class="center muted" style="padding:40px">Loading…</p>'; return; }
+  if (!state.loadedOnce) { state.loadedOnce = true; try { sessionStorage.removeItem('pc_autoreload'); } catch {} }
   if (state.locked) return renderLock();
   if (role() === 'customer') return renderCustomerHome();
   renderStaff();
@@ -1567,19 +1576,23 @@ const A = {
   async joinApp() {
     const name = val('join_name').trim();
     if (!name) { state.authMsg = 'Type your name first.'; return render(); }
+    let joinedRole;
     try {
       state.authMsg = '';
-      await store.redeemInvite(joinCode(), state.user.email, name);
-      localStorage.removeItem(JOIN_KEY);
-      await checkAccess();
-      if (store.mode === 'shared') notifyJoined(name, state.user.email);
+      joinedRole = await store.redeemInvite(joinCode(), state.user.email, name);
     } catch (e) {
       // The link was already used, cancelled, or couldn't be matched: send their name to Jace to approve.
       console.error(e);
       const code = joinCode();
       localStorage.removeItem(JOIN_KEY);
       try { await askToJoin(name, code); } catch (e2) { console.error(e2); state.authMsg = 'Something went wrong. Text Jace and he’ll get you in.'; checkAccess(); }
+      return;
     }
+    // Joined. Start the app fresh so their account opens the same way it does every other time.
+    localStorage.removeItem(JOIN_KEY);
+    app.innerHTML = '<p class="center muted" style="padding:40px">You’re in! Opening your account…</p>';
+    if (store.mode === 'shared') await Promise.race([notifyJoined(name, state.user.email, joinedRole), new Promise((r) => setTimeout(r, 3000))]);
+    location.replace(location.pathname);
   },
   async sendJoin() {
     const name = val('wait_name').trim();
