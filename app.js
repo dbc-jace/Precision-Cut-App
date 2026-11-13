@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.13.9';
+import { createStore, newId } from './store.js?v=2026.11.13.10';
 
-const APP_VERSION = '2026.11.13.9'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.13.10'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -33,6 +33,10 @@ const weeksBetween = (a, b) => Math.round((parseYmd(b) - parseYmd(a)) / (7 * 864
 const shortDate = (s) => s ? parseYmd(String(s).slice(0, 10)).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
 const longDate = (s) => parseYmd(s).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
 function weekLabel(id) { const s = parseYmd(id); const e = new Date(s); e.setDate(e.getDate() + 6); const f = { month: 'short', day: 'numeric' }; return `${s.toLocaleDateString('en-US', f)} – ${e.toLocaleDateString('en-US', f)}`; }
+// Seasons: mowing is April–November, snow is October–March (months are 0-based).
+const GRASS_MONTHS = [3, 4, 5, 6, 7, 8, 9, 10], SNOW_MONTHS = [9, 10, 11, 0, 1, 2];
+const grassWeek = (id) => { const s = parseYmd(id), e = new Date(s); e.setDate(e.getDate() + 6); return GRASS_MONTHS.includes(s.getMonth()) || GRASS_MONTHS.includes(e.getMonth()); };
+const snowSeason = (d = new Date()) => SNOW_MONTHS.includes(d.getMonth());
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 function skipDeadline(weekId) {
   const s = settings();
@@ -439,17 +443,33 @@ function renderStaff() {
 }
 
 /* ----- Route (admin + crew) ----- */
-function dueGrass(c, weekId) {
-  if (!c.active || !c.grass) return false;
+// Who's automatically on a week's route. Only in mowing season, and never before they became a customer.
+// Every-2-weeks customers start right away (first week as a customer, or the first week of the season),
+// then go every other week, counted from their last mow: a skip moves them to the next week.
+function dueGrass(c, weekId, depth = 0) {
+  if (!c.active || !c.grass || !grassWeek(weekId)) return false;
+  if (c.createdAt && weekId < weekStart(new Date(c.createdAt))) return false;
   if (c.grassPlan === 'weekly') return true;
-  if (c.grassPlan === 'biweekly') return ((weeksBetween(c.biweeklyStart || weekId, weekId) % 2) + 2) % 2 === 0;
-  return false;
+  if (c.grassPlan !== 'biweekly') return false;
+  return depth > 60 || !mowWeek(c, shiftWeek(weekId, -1), depth + 1);
 }
+// Did (or will) this customer get a mow that week? A stop on file wins, otherwise their plan decides.
+function mowWeek(c, weekId, depth = 0) {
+  const stop = stopOf(`${weekId}_${c.id}`);
+  return stop ? stop.status !== 'skipped' : dueGrass(c, weekId, depth);
+}
+// Open "Request a mow" from the app puts that customer on the route automatically:
+// the week they asked, and this week until it's done or handled.
+const mowAsked = (c, weekId) => state.requests.some((r) => r.type === 'mow' && r.status !== 'done' && r.customerId === c.id
+  && (weekStart(new Date(r.at)) === weekId || weekId === weekStart(new Date())));
+const closeMowReqs = (cid) => state.requests.filter((r) => r.type === 'mow' && r.status !== 'done' && r.customerId === cid)
+  .forEach((r) => store.update('requests', r.id, { status: 'done', handledAt: Date.now() }));
 function grassRoute(weekId) {
   const rows = [];
   for (const c of state.customers) {
     const stop = stopOf(`${weekId}_${c.id}`);
-    if (dueGrass(c, weekId) || stop) rows.push({ c, stop, id: `${weekId}_${c.id}`, status: stop?.status || 'scheduled' });
+    const asked = mowAsked(c, weekId);
+    if (dueGrass(c, weekId) || stop || asked) rows.push({ c, stop, asked, id: `${weekId}_${c.id}`, status: stop?.status || 'scheduled' });
   }
   return rows.sort((a, b) => (a.stop?.day ?? 9) - (b.stop?.day ?? 9) || byName(a.c, b.c));
 }
@@ -476,7 +496,7 @@ function stopCard(r, kind) {
   const sameDay = kind === 'snow' ? snowStops(c.id, stop.date) : [];
   if (kind === 'snow' && r.status === 'done' && !sameDay.some((s) => s.status === 'scheduled') && (stop.visit || 1) === Math.max(...sameDay.map((s) => s.visit || 1)))
     action += `<button class="btn btn-ghost btn-sm" data-a="snowAgain" data-cid="${c.id}">+ Clean again today</button>`;
-  const plan = kind === 'snow' ? (c.snowPlan === 'seasonal' ? 'Seasonal' : 'Per snow') + ((stop?.visit || 1) > 1 ? ` · Visit ${stop.visit}` : '') : ({ weekly: 'Weekly', biweekly: 'Every 2 wks', oncall: 'On call' }[c.grassPlan] || '');
+  const plan = kind === 'snow' ? (c.snowPlan === 'seasonal' ? 'Seasonal' : 'Per snow') + ((stop?.visit || 1) > 1 ? ` · Visit ${stop.visit}` : '') : (r.asked && !stop?.manual ? 'Asked for a mow' : stop?.manual ? 'Added' : { weekly: 'Weekly', biweekly: 'Every 2 wks', oncall: 'On call' }[c.grassPlan] || '');
   return `<div class="card ${r.status === 'done' ? 'done' : ''}" style="gap:8px">
     <div class="between"><button class="plain grow" data-a="openCust" data-id="${c.id}"><div class="b" style="font-size:16px">${esc(c.name)}</div></button>${pill(r.status === 'skipped' ? 'p-gray' : 'p-blue', plan)}</div>
     ${c.address ? `<a href="https://maps.apple.com/?q=${encodeURIComponent(c.address)}" class="muted">${esc(c.address)}</a>` : ''}
@@ -493,7 +513,8 @@ function viewRoute() {
     const sched = rows.filter((r) => r.status === 'scheduled'), done = rows.filter((r) => r.status === 'done'), skipped = rows.filter((r) => r.status === 'skipped');
     const thisWeek = state.week === weekStart(new Date());
     const toRemind = sched.filter((r) => r.c.grassPlan !== 'oncall');
-    const oncall = state.customers.filter((c) => c.active && c.grass && c.grassPlan === 'oncall' && !stopOf(`${state.week}_${c.id}`));
+    const inSeason = grassWeek(state.week);
+    const oncall = inSeason ? state.customers.filter((c) => c.active && c.grass && c.grassPlan === 'oncall' && !stopOf(`${state.week}_${c.id}`) && !mowAsked(c, state.week)) : [];
     body = `<div class="weeknav"><button class="arrow" data-a="week" data-n="-1" aria-label="Previous week">◀</button>
         <div class="center"><div class="b">Week of ${weekLabel(state.week)}</div>${thisWeek ? '<div class="muted small">This week</div>' : '<button class="link small" data-a="thisWeek">Jump to this week</button>'}</div>
         <button class="arrow" data-a="week" data-n="1" aria-label="Next week">▶</button></div>
@@ -503,11 +524,14 @@ function viewRoute() {
       ${isAdmin() ? `<div class="card"><div class="between"><div><div class="b">Weekly reminders</div><div class="muted small">Skip deadline: ${esc(deadlineText(state.week))}</div></div>
           <button class="btn btn-primary btn-sm" data-a="openReminders" ${toRemind.length ? '' : 'disabled'}>Send (${toRemind.filter((r) => !r.stop?.reminded).length})</button></div>
         ${oncall.length ? `<div class="between" style="border-top:1px solid #ECEDEC;padding-top:10px"><div><div class="b">On-call customers</div><div class="muted small">${oncall.length} not asked yet this week</div></div>
-          <button class="btn btn-ghost btn-sm" data-a="openOncall">Ask</button></div>` : ''}</div>` : ''}
+          <button class="btn btn-ghost btn-sm" data-a="openOncall">Ask</button></div>` : ''}
+        <div class="between" style="border-top:1px solid #ECEDEC;padding-top:10px"><div><div class="b">Add someone this week</div><div class="muted small">Weekly, every-2-weeks and app requests are added for you</div></div>
+          <button class="btn btn-ghost btn-sm" data-a="openAddWeek">+ Add</button></div></div>` : ''}
+      ${!inSeason ? '<div class="card muted">Mowing season is April to November, so no one is added automatically this week.</div>' : ''}
       ${sched.length ? `<div class="sec">To do</div>${sched.map((r) => stopCard(r, 'grass')).join('')}` : ''}
       ${done.length ? `<div class="sec">Done</div>${done.map((r) => stopCard(r, 'grass')).join('')}` : ''}
       ${skipped.length ? `<div class="sec">Skipped</div>${skipped.map((r) => stopCard(r, 'grass')).join('')}` : ''}
-      ${!rows.length ? '<div class="card empty">Nothing on the route this week.</div>' : ''}`;
+      ${!rows.length && inSeason ? '<div class="card empty">Nothing on the route this week.</div>' : ''}`;
   } else if (state.routeSeg === 'snow') {
     const rows = state.stops.filter((s) => s.type === 'snow' && s.date === state.snowDate && cust(s.customerId))
       .map((s) => ({ c: cust(s.customerId), stop: s, id: s.id, status: s.status })).sort((a, b) => byName(a.c, b.c) || (a.stop.visit || 1) - (b.stop.visit || 1));
@@ -597,9 +621,9 @@ function viewCustomerEdit() {
       <label class="f"><span class="lbl">Notes (crew can see, customer can't)</span><textarea class="inp" id="c_notes" placeholder="Gate code, dogs, problem spots…">${esc(noteOf(c.id))}</textarea></label>
       <label class="check"><input type="checkbox" id="c_active" ${c.active ? 'checked' : ''}> Active customer</label></div>
     <div class="card"><label class="check"><input type="checkbox" id="c_grass" ${c.grass ? 'checked' : ''}> <b>Grass</b></label>
-      <div class="grid2"><label class="f"><span class="lbl">Plan</span><select class="inp" id="c_grassPlan" data-change="grassPlan">${opt('weekly', c.grassPlan, 'Weekly')}${opt('biweekly', c.grassPlan, 'Every 2 weeks')}${opt('oncall', c.grassPlan, 'On call')}</select></label>
+      <div class="grid2"><label class="f"><span class="lbl">Plan</span><select class="inp" id="c_grassPlan">${opt('weekly', c.grassPlan, 'Weekly')}${opt('biweekly', c.grassPlan, 'Every 2 weeks')}${opt('oncall', c.grassPlan, 'On call')}</select></label>
         <label class="f"><span class="lbl">Price per cut ($)</span><input class="inp" id="c_pGrass" inputmode="decimal" value="${esc(p.grass ?? '')}"></label></div>
-      <label class="f" id="c_biWrap" ${c.grassPlan === 'biweekly' ? '' : 'hidden'}><span class="lbl">Every-2-weeks: first week</span><input class="inp" type="date" id="c_biStart" value="${esc(c.biweeklyStart || state.week)}"></label></div>
+      <div class="muted small">Weekly and every-2-weeks customers go on the route automatically from their first week, April to November.</div></div>
     <div class="card"><label class="check"><input type="checkbox" id="c_snow" ${c.snow ? 'checked' : ''}> <b>Snow</b></label>
       <label class="f"><span class="lbl">Plan</span><select class="inp" id="c_snowPlan">${opt('perSnow', c.snowPlan, 'Per snow (on request)')}${opt('seasonal', c.snowPlan, 'Seasonal (billed up front)')}</select></label>
       <div class="grid2"><label class="f"><span class="lbl">Per visit ($)</span><input class="inp" id="c_pSnow" inputmode="decimal" value="${esc(p.snow ?? '')}"></label>
@@ -815,14 +839,16 @@ function renderCustomerHome() {
   const openMow = state.requests.find((r) => r.type === 'mow' && r.status !== 'done');
   const venmoUrl = s.venmo ? (s.venmo.startsWith('http') ? s.venmo : 'https://' + s.venmo) : '';
   let grassCard = '';
-  if (c.grass && c.active) {
+  if (c.grass && c.active && !grassWeek(wk) && !stop) {
+    grassCard = '<div class="card"><div class="b">Grass</div><div class="muted">Mowing season is April to November. See you in the spring!</div></div>';
+  } else if (c.grass && c.active) {
     if (c.grassPlan === 'oncall') {
       grassCard = `<div class="card"><div class="b">Grass</div><div class="muted">You’re on call. I’ll text you when I’m coming, or you can ask for a mow anytime.</div>
         ${status === 'done' ? '<div class="okbar">✓ Mowed this week</div>' : openMow ? '<div class="okbar">Mow requested. I’ll be in touch!</div>' : '<button class="btn btn-lime" data-a="custRequest" data-type="mow">Request a mow</button>'}</div>`;
     } else {
       const plan = c.grassPlan === 'weekly' ? 'Weekly' : 'Every 2 weeks';
       let inner = '';
-      if (!status) inner = '<div class="muted">No mow scheduled this week (every-2-weeks plan).</div>';
+      if (!status) inner = '<div class="muted">No mow this week. Every-2-weeks: you’re on next week.</div>';
       else if (status === 'done') inner = '<div class="okbar">✓ Mowed this week. Thank you!</div>';
       else if (status === 'skipped') inner = `<div class="warnbar">You’re skipping this week.</div>`;
       else inner = `<div class="okbar">Scheduled this week (${esc(weekLabel(wk))})</div>
@@ -836,7 +862,7 @@ function renderCustomerHome() {
     snowCard = c.snowPlan === 'seasonal'
       ? '<div class="card"><div class="between"><div class="b">Snow</div>' + pill('p-blue', 'Seasonal') + '</div><div class="muted">You’re covered all season. I’ll clear it after each snow.</div></div>'
       : `<div class="card"><div class="between"><div class="b">Snow</div>${pill('p-blue', 'Per snow')}</div>
-        ${openSnow ? `<div class="okbar">Snow removal requested ${shortDate(ymd(new Date(openSnow.at)))}. I’m on it!</div>` : `<div class="muted">Need your snow cleared? Tap below and I’ll get you on the list.</div><button class="btn btn-lime" data-a="custRequest" data-type="snow">Request snow removal</button>`}</div>`;
+        ${!snowSeason() && !openSnow ? '<div class="muted">Snow season is October to March.</div>' : openSnow ? `<div class="okbar">Snow removal requested ${shortDate(ymd(new Date(openSnow.at)))}. I’m on it!</div>` : `<div class="muted">Need your snow cleared? Tap below and I’ll get you on the list.</div><button class="btn btn-lime" data-a="custRequest" data-type="snow">Request snow removal</button>`}</div>`;
   }
   app.innerHTML = `${demoBar()}
     <header class="top"><div class="top-row">${brand()}<button class="link" data-a="signOut">Sign out</button></div>
@@ -936,9 +962,16 @@ function renderSheet() {
         return `<div class="between" style="border-top:1px solid #ECEDEC;padding-top:10px"><div><div class="b">${esc(r.c.name)}</div>${r.stop?.reminded ? '<div class="muted small">✓ Sent</div>' : ''}</div>
           ${r.c.phone ? `<a class="btn ${r.stop?.reminded ? 'btn-ghost' : 'btn-primary'} btn-sm" href="${smsHref(r.c.phone, body)}" data-a="reminded" data-id="${r.id}" data-cid="${r.c.id}">${r.stop?.reminded ? 'Again' : 'Text'}</a>` : '<span class="muted small">No phone</span>'}</div>`; }).join('')}
       <button class="btn btn-ghost" data-a="closeSheet">Close</button>`;
+  } else if (sh.kind === 'addWeek') {
+    const on = new Set(grassRoute(state.week).filter((r) => r.status !== 'skipped').map((r) => r.c.id));
+    const list = state.customers.filter((c) => c.active && !on.has(c.id)).sort(byName);
+    inner = `<div class="b" style="font-size:20px">Add to week of ${esc(weekLabel(state.week))}</div><div class="muted small">For anyone who said yes, asked by text, or needs an extra mow. Use Skip on the route to take someone off.</div>
+      ${list.map((c) => `<div class="between" style="border-top:1px solid #ECEDEC;padding-top:10px"><div class="grow"><div class="b">${esc(c.name)}</div><div class="muted small">${esc({ weekly: 'Weekly', biweekly: 'Every 2 weeks', oncall: 'On call' }[c.grassPlan] || (c.grass ? '' : 'No grass plan'))}</div></div>
+        <button class="btn btn-lime btn-sm" data-a="addWeek" data-cid="${c.id}">Add</button></div>`).join('') || '<div class="muted">Everyone is already on this week.</div>'}
+      <button class="btn btn-ghost" data-a="closeSheet">Done</button>`;
   } else if (sh.kind === 'oncall') {
     const s = settings();
-    const list = state.customers.filter((c) => c.active && c.grass && c.grassPlan === 'oncall' && !stopOf(`${state.week}_${c.id}`)).sort(byName);
+    const list = state.customers.filter((c) => c.active && c.grass && c.grassPlan === 'oncall' && !stopOf(`${state.week}_${c.id}`) && !mowAsked(c, state.week)).sort(byName);
     inner = `<div class="b" style="font-size:20px">On-call customers</div><div class="muted small">Text each one, then tap “Yes” for anyone who wants a mow. It adds them to this week.</div>
       ${list.map((c) => `<div class="between" style="border-top:1px solid #ECEDEC;padding-top:10px"><div class="b grow">${esc(c.name)}</div>
         ${c.phone ? `<a class="btn btn-ghost btn-sm" href="${smsHref(c.phone, s.oncallMsg)}">Text</a>` : ''}<button class="btn btn-lime btn-sm" data-a="oncallYes" data-cid="${c.id}">Yes</button></div>`).join('') || '<div class="muted">Everyone’s been added this week.</div>'}
@@ -1082,6 +1115,7 @@ const A = {
     const c = cust(el.dataset.cid), kind = el.dataset.kind;
     const seasonal = kind === 'snow' && c.snowPlan === 'seasonal';
     const stopData = { customerId: c.id, type: kind, status: 'done', doneAt: Date.now(), doneByName: state.account.name || '', weekId: kind === 'snow' ? weekStart(parseYmd(state.snowDate)) : state.week, ...(kind === 'snow' ? { date: state.snowDate } : {}) };
+    if (kind === 'grass') closeMowReqs(c.id);
     if (!isAdmin() || seasonal) { store.update('stops', el.dataset.id, stopData); toast(seasonal ? 'Done (seasonal, no bill)' : 'Marked done'); return; }
     const base = kind === 'snow' ? num(priceOf(c.id).snow) : num(priceOf(c.id).grass);
     state.sheet = { kind: 'done', cid: c.id, stopId: el.dataset.id, stopData, type: kind, base, price: String(base), sel: [], desc: kind === 'snow' ? snowDesc(stopOf(el.dataset.id)) : 'Lawn mowing' };
@@ -1114,11 +1148,15 @@ const A = {
     if (el.dataset.send) await run(() => sendInvoice(v)); else toast('Saved. Send the invoice anytime.');
   },
   async sendInvoice(el) { const v = visitOf(el.dataset.id); if (v) await run(() => sendInvoice(v)); },
-  adminSkip(el) { store.update('stops', el.dataset.id, { customerId: el.dataset.cid, weekId: state.week, type: 'grass', status: 'skipped', skippedBy: 'admin', skippedAt: Date.now() }); },
+  adminSkip(el) { closeMowReqs(el.dataset.cid); store.update('stops', el.dataset.id, { customerId: el.dataset.cid, weekId: state.week, type: 'grass', status: 'skipped', skippedBy: 'admin', skippedAt: Date.now() }); },
   unskip(el) { store.update('stops', el.dataset.id, { status: 'scheduled', skippedBy: null, skippedAt: null }); },
   openReminders() { state.sheet = { kind: 'remind' }; renderSheet(); },
   reminded(el) { store.update('stops', el.dataset.id, { customerId: el.dataset.cid, weekId: state.week, type: 'grass', status: stopOf(el.dataset.id)?.status || 'scheduled', reminded: Date.now() }); },
   openOncall() { state.sheet = { kind: 'oncall' }; renderSheet(); },
+  openAddWeek() { state.sheet = { kind: 'addWeek' }; renderSheet(); },
+  addWeek(el) { const id = `${state.week}_${el.dataset.cid}`, old = stopOf(id);
+    store.set('stops', id, { customerId: el.dataset.cid, weekId: state.week, type: 'grass', status: 'scheduled', manual: true, ...(old?.day != null ? { day: old.day } : {}) });
+    toast('Added to this week'); renderSheet(); },
   oncallYes(el) { store.set('stops', `${state.week}_${el.dataset.cid}`, { customerId: el.dataset.cid, weekId: state.week, type: 'grass', status: 'scheduled' }); toast('Added to this week'); },
   startSnow() {
     const date = state.snowDate;
@@ -1159,7 +1197,7 @@ const A = {
     if (!name) return toast('Name is needed');
     const existing = cust(state.custId);
     const data = { name, phone: val('c_phone'), address: val('c_address'), email: val('c_email').trim().toLowerCase(), deck: val('c_deck'), active: checked('c_active'),
-      grass: checked('c_grass'), grassPlan: val('c_grassPlan'), biweeklyStart: weekStart(parseYmd(val('c_biStart') || state.week)), snow: checked('c_snow'), snowPlan: val('c_snowPlan') };
+      grass: checked('c_grass'), grassPlan: val('c_grassPlan'), snow: checked('c_snow'), snowPlan: val('c_snowPlan') };
     // Read every field before writing: a write can redraw the screen.
     const pricing = { grass: num(val('c_pGrass')), snow: num(val('c_pSnow')), season: num(val('c_pSeason')) };
     const notes = { text: val('c_notes') };
@@ -1210,7 +1248,7 @@ const A = {
   removeUser(el) { if (!confirm(`Remove app access for ${el.dataset.email}?`)) return; store.remove('users', el.dataset.email); toast('Access removed'); },
   billSeason(el) {
     const c = cust(el.dataset.cid), y = new Date().getFullYear(), m = new Date().getMonth();
-    const season = m >= 6 ? `${y}-${String(y + 1).slice(2)}` : `${y - 1}-${String(y).slice(2)}`;
+    const season = m >= 3 ? `${y}-${String(y + 1).slice(2)}` : `${y - 1}-${String(y).slice(2)}`; // Oct–Mar season; from April on, bill the coming one
     state.sheet = { kind: 'done', cid: c.id, stopId: null, type: 'season', base: num(priceOf(c.id).season), price: String(num(priceOf(c.id).season)), sel: [], desc: `Snow removal - ${season} season`, canDesc: true };
     renderSheet();
   },
@@ -1285,7 +1323,7 @@ const A = {
   quoteToCustomer(el) {
     const q = state.quotes.find((x) => x.id === el.dataset.id);
     const plan = { Weekly: 'weekly', 'Every 2 weeks': 'biweekly' }[q.freq] || 'oncall';
-    const id = store.add('customers', { name: q.name, phone: q.phone, address: q.address, email: '', deck: '', active: true, grass: !!q.grassPrice, grassPlan: plan, biweeklyStart: weekStart(new Date()), snow: !!q.snowPrice, snowPlan: q.snowPlan, createdAt: Date.now() });
+    const id = store.add('customers', { name: q.name, phone: q.phone, address: q.address, email: '', deck: '', active: true, grass: !!q.grassPrice, grassPlan: plan, snow: !!q.snowPrice, snowPlan: q.snowPlan, createdAt: Date.now() });
     store.set('pricing', id, { grass: q.grassPrice || 0, snow: q.snowPlan === 'perSnow' ? q.snowPrice || 0 : 0, season: q.snowPlan === 'seasonal' ? q.snowPrice || 0 : 0 });
     store.set('notes', id, { text: q.notes || '' });
     store.update('quotes', q.id, { status: 'Accepted' });
@@ -1439,7 +1477,6 @@ document.addEventListener('change', async (ev) => {
   const k = el.dataset.change;
   if (k === 'setDay') store.update('stops', el.dataset.id, { customerId: el.dataset.cid, weekId: state.week, type: 'grass', status: stopOf(el.dataset.id)?.status || 'scheduled', day: el.value === '' ? null : Number(el.value) });
   if (k === 'composeTo') { const sh = state.sheet; sh.label = document.getElementById('cm_label')?.value || sh.label; sh.cid = el.value; sh.body = fillMsg(sh.tpl, cust(sh.cid), sh.pending); renderSheet(); }
-  if (k === 'grassPlan') { const w = document.getElementById('c_biWrap'); if (w) w.hidden = el.value !== 'biweekly'; }
   if (k === 'bulkSkip') { state.sheet.skipMembers = el.checked; renderSheet(); }
   if (k === 'snowDate') { state.snowDate = el.value || today(); render(); }
   if (k === 'demoAs') { localStorage.setItem('pc_demo_as', el.value); location.reload(); }
