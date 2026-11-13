@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.13.3';
+import { createStore, newId } from './store.js?v=2026.11.13.4';
 
-const APP_VERSION = '2026.11.13.3'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.13.4'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -875,8 +875,24 @@ function renderSignIn() {
     <button class="link center" data-a="authMode">${up ? 'Already have an account? Sign in' : 'First time? Create an account'}</button>
     ${up ? '' : '<button class="link center small" data-a="resetPw">Forgot password?</button>'}`);
 }
+// Confirmation emails: remember which address this phone last sent one to, so anyone who lands on the
+// "confirm your email" screen without one (e.g. the first send failed) gets one sent automatically.
+const VERIFY_KEY = 'pc_verify_sent';
+const verifySentTo = () => { try { return localStorage.getItem(VERIFY_KEY) || ''; } catch { return ''; } };
+const markVerifySent = (email) => { try { localStorage.setItem(VERIFY_KEY, email); } catch {} };
+const verifyErr = (e) => ({ 'auth/too-many-requests': 'Too many emails sent for now. Wait a few minutes, then tap “Send the link again”.',
+  'auth/network-request-failed': 'No internet connection. Check your signal and tap “Send the link again”.' })[e?.code]
+  || 'We couldn’t send the confirmation email (' + (e?.code || e?.message || 'unknown error') + '). Tap “Send the link again”, or use Sign in with Google instead.';
+async function sendVerifyEmail() {
+  try { await store.resendVerification(returnLink()); markVerifySent(state.user.email); state.authMsg = 'Sent! Check your inbox for an email from Precision Cut Lawns.'; }
+  catch (e) { console.error(e); state.authMsg = verifyErr(e); }
+  render();
+}
 function renderVerify() {
-  app.innerHTML = authCard(`<p>We sent a link to <b>${esc(state.user.email)}</b>. Tap it in the email, then tap <b>Continue</b> to come back to the app.</p>
+  if (store.mode === 'shared' && verifySentTo() !== state.user.email && !state.verifyAutoTried) { state.verifyAutoTried = true; sendVerifyEmail(); }
+  const sent = verifySentTo() === state.user.email;
+  app.innerHTML = authCard(`<p>${sent ? 'We sent a link to' : 'We’re sending a confirmation link to'} <b>${esc(state.user.email)}</b>. Tap it in the email, then tap <b>Continue</b> to come back to the app.</p>
+    <p class="muted small">Don’t see it? Check your spam or junk folder for an email from <b>noreply@precision-cut-215ed.firebaseapp.com</b>.</p>
     <button class="btn btn-primary" data-a="checkVerified">I’ve confirmed my email</button>
     <button class="btn btn-ghost" data-a="resendVerify">Send the link again</button><button class="link center" data-a="signOut">Use a different account</button>`);
 }
@@ -1324,7 +1340,16 @@ const A = {
   // Auth
   async google() { await authRun(() => store.signInGoogle()); },
   async signIn() { await authRun(() => store.signIn(val('au_email').trim(), val('au_pw'))); },
-  async signUp() { await authRun(async () => { await store.signUp(val('au_email').trim(), val('au_pw'), returnLink()); state.authMsg = 'Check your email for a confirmation link. After you tap it, tap Continue to come back here.'; }); },
+  async signUp() {
+    const email = val('au_email').trim().toLowerCase();
+    state.verifyAutoTried = true; // this sign-up sends its own email; don't double-send from the confirm screen
+    await authRun(async () => {
+      try { await store.signUp(email, val('au_pw'), returnLink()); }
+      catch (e) { if (store.currentEmail?.() === email) { state.verifyAutoTried = true; throw Object.assign(new Error(verifyErr(e)), { code: 'verify/failed' }); } throw e; }
+      markVerifySent(email); state.verifyAutoTried = true;
+      state.authMsg = 'Check your email for a confirmation link (look in spam too). After you tap it, tap Continue to come back here.';
+    });
+  },
   authMode() { state.authModeSet = true; state.authMode = state.authMode === 'up' ? 'in' : 'up'; state.authMsg = ''; render(); },
   async joinApp() {
     const name = val('join_name').trim();
@@ -1344,14 +1369,14 @@ const A = {
   },
   async resetPw() { const e = val('au_email').trim(); if (!e) { state.authMsg = 'Type your email first.'; return render(); } await authRun(async () => { await store.resetPassword(e); state.authMsg = 'Password reset email sent.'; }); },
   async checkVerified() { state.user = await store.reloadUser(); if (!state.user.verified) { state.authMsg = 'Not confirmed yet. Tap the link in the email first.'; render(); } else checkAccess(); },
-  async resendVerify() { await store.resendVerification(returnLink()); state.authMsg = 'Sent again.'; render(); },
+  async resendVerify() { state.authMsg = 'Sending…'; render(); await sendVerifyEmail(); },
   async claimSetup() { await authRun(async () => { await store.claimSetup(state.user.email, val('setup_name').trim() || 'Jace'); await checkAccess(); }); },
   async signOut() { localStorage.removeItem('pc_demo_as'); state.locked = false; await store.signOut(); if (store.mode === 'local') location.reload(); },
 };
 async function run(fn) { try { await fn(); } catch (e) { console.error(e); toast(e.message || 'Something went wrong'); } }
 async function authRun(fn) {
   try { state.authMsg = ''; await fn(); }
-  catch (e) { state.authMsg = ({ 'auth/invalid-credential': 'Wrong email or password.', 'auth/email-already-in-use': 'That email already has an account. Sign in instead.', 'auth/weak-password': 'Use at least 6 characters.', 'auth/invalid-email': 'That email doesn’t look right.' })[e.code] || e.message; }
+  catch (e) { state.authMsg = ({ 'auth/invalid-credential': 'Wrong email or password.', 'auth/email-already-in-use': 'That email already has an account. Sign in instead.', 'auth/weak-password': 'Use at least 6 characters.', 'auth/invalid-email': 'That email doesn’t look right.', 'auth/too-many-requests': 'Too many tries. Wait a few minutes and try again.' })[e.code] || e.message; }
   render();
 }
 function download(name, text, type) {
@@ -1475,6 +1500,7 @@ document.addEventListener('visibilitychange', () => {
   store.onAuth((u) => {
     unsubs.forEach((x) => typeof x === 'function' && x()); unsubs = [];
     state.user = u; state.account = null; state.access = null; state.need = null;
+    if (!u) state.verifyAutoTried = false;
     if (u && u.verified) checkAccess(); else render();
   });
 })();
