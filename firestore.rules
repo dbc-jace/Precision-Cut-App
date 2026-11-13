@@ -116,12 +116,25 @@ service cloud.firestore {
     // Requests and messages from customers (snow removal, mow requests, notes to Jace).
     match /requests/{id} {
       allow read: if isStaff() || ownsCustomer(resource.data.customerId);
-      allow create: if isStaff() || ownsCustomer(request.resource.data.customerId);
+      allow create: if isStaff();
+      // A customer's own request or message: always open, never marked as coming from Jace.
+      allow create: if ownsCustomer(request.resource.data.customerId)
+        && request.resource.data.get('status', 'open') == 'open'
+        && !request.resource.data.keys().hasAny(['fromAdmin', 'replies', 'custHidden', 'handledAt']);
       allow update, delete: if isStaff();
       // A customer can reply in their own threads, mark them read, and delete them from their app.
       allow update: if ownsCustomer(resource.data.customerId)
         && request.resource.data.customerId == resource.data.customerId
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['replies', 'status', 'custSeenAt', 'custHidden']);
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['replies', 'status', 'custSeenAt', 'custHidden'])
+        && request.resource.data.get('status', 'open') in [resource.data.get('status', 'open'), 'open']
+        && validCustReplies(resource.data.get('replies', []), request.resource.data.get('replies', []));
+    }
+    // Replies stay as they were, plus at most one new reply that is marked as from the customer.
+    function validCustReplies(before, after) {
+      return after is list && (after == before
+        || (after.size() == before.size() + 1 && after[0:before.size()] == before
+            && after[before.size()].by == 'customer'
+            && after[before.size()].text is string && after[before.size()].text.size() < 5000));
     }
 
     // Admin only.
