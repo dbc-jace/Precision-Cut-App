@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=1.2.0';
+import { createStore, newId } from './store.js?v=1.3.0';
 
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.3.0';
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -44,7 +44,7 @@ const deadlineText = (weekId) => skipDeadline(weekId).toLocaleString('en-US', { 
 
 /* ---------- defaults ---------- */
 const DEFAULTS = {
-  businessName: 'Precision Cut Lawns', businessPhone: '224-334-8532', website: '', zelle: '224-334-8532', venmo: '', zelleQr: '',
+  businessName: 'Precision Cut Lawns', businessPhone: '224-334-8532', businessEmail: 'jace.precisioncutlawns@gmail.com', website: '', zelle: '224-334-8532', venmo: '', zelleQr: '',
   skipDay: 3, skipTime: '18:00',
   reminderMsg: 'Hi {first}, it\'s Jace with Precision Cut Lawns. Your lawn is scheduled to be mowed this week ({week}). Need to skip? Tap here by {deadline}: {link}',
   oncallMsg: 'Hi, it\'s Jace with Precision Cut Lawns. Would you like your grass cut today?',
@@ -99,61 +99,127 @@ function showError(e) {
 }
 
 /* ---------- invoices: PDF + share ---------- */
-let logoData = null;
-async function logo() {
-  if (logoData) return logoData;
-  const blob = await fetch('logo.jpg').then((r) => r.blob());
-  logoData = await new Promise((res) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.readAsDataURL(blob); });
-  return logoData;
+const imgCache = {};
+async function imgData(path) {
+  if (imgCache[path]) return imgCache[path];
+  const blob = await fetch(path).then((r) => r.blob());
+  imgCache[path] = await new Promise((res) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.readAsDataURL(blob); });
+  return imgCache[path];
 }
+// Letterhead-style invoice / quote. Letter size, in points (612 x 792).
 async function buildPdf(kind, data) {
   const s = settings();
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ unit: 'pt', format: 'letter' });
-  const forest = [24, 55, 35], muted = [90, 97, 91];
-  doc.addImage(await logo(), 'JPEG', 54, 40, 170, 106);
-  doc.setFont('helvetica', 'bold'); doc.setFontSize(26); doc.setTextColor(...forest);
-  doc.text(kind === 'quote' ? 'QUOTE' : 'INVOICE', 558, 78, { align: 'right' });
-  doc.setFont('helvetica', 'normal'); doc.setFontSize(11); doc.setTextColor(...muted);
-  data.meta.forEach((m, i) => doc.text(m, 558, 98 + i * 15, { align: 'right' }));
-  doc.setDrawColor(106, 165, 31); doc.setLineWidth(2); doc.line(54, 160, 558, 160);
-  let y = 188;
-  doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.text(kind === 'quote' ? 'PREPARED FOR' : 'BILL TO', 54, y);
-  doc.setFontSize(13); doc.setTextColor(26, 29, 26); doc.text(data.name || '', 54, y + 18);
-  doc.setFont('helvetica', 'normal'); doc.setFontSize(11);
-  data.to.filter(Boolean).forEach((l, i) => doc.text(l, 54, y + 34 + i * 14));
-  y += 34 + data.to.filter(Boolean).length * 14 + 26;
-  doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(...muted);
-  doc.text('DESCRIPTION', 54, y); doc.text('AMOUNT', 558, y, { align: 'right' });
-  y += 8; doc.setDrawColor(220, 226, 218); doc.setLineWidth(1); doc.line(54, y, 558, y);
-  doc.setFont('helvetica', 'normal'); doc.setFontSize(12); doc.setTextColor(26, 29, 26);
-  for (const l of data.lines) { const dl = doc.splitTextToSize(l.desc, 380); y += 22; doc.text(dl, 54, y); doc.text(money2(l.amount), 558, y, { align: 'right' }); y += 8 + (dl.length - 1) * 15; doc.line(54, y, 558, y); }
-  y += 28; doc.setFont('helvetica', 'bold'); doc.setFontSize(15); doc.setTextColor(...forest);
-  if (data.totalLabel) { doc.text(data.totalLabel, 54, y); doc.text(money2(data.total), 558, y, { align: 'right' }); }
-  y += 30;
-  if (kind === 'invoice') {
-    const h = s.venmo ? 76 : 58;
-    doc.setFillColor(244, 246, 242); doc.roundedRect(54, y, 504, h, 6, 6, 'F');
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(...muted); doc.text('HOW TO PAY', 70, y + 18);
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(12); doc.setTextColor(26, 29, 26);
-    doc.text(`Zelle: send ${money2(data.total)} to ${s.zelle}`, 70, y + 38);
-    if (s.venmo) doc.textWithLink(`Venmo: ${s.venmo}`, 70, y + 56, { url: s.venmo.startsWith('http') ? s.venmo : 'https://' + s.venmo });
-    y += h + 30;
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(14); doc.setTextColor(...forest); doc.text('Thank you!', 306, y, { align: 'center' });
-  } else if (data.notes) {
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(12); doc.setTextColor(26, 29, 26);
-    doc.text(doc.splitTextToSize(data.notes, 504), 54, y); y += 20 + 15 * doc.splitTextToSize(data.notes, 504).length;
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(13); doc.setTextColor(...forest);
-    doc.text(`Questions? Call or text ${s.businessPhone}`, 306, y, { align: 'center' });
+  const forest = [24, 55, 35], lime = [106, 165, 31], ink = [26, 29, 26], muted = [96, 104, 98], pale = [244, 246, 242], rule = [220, 226, 218];
+  const L = 48, R = 564, W = R - L;
+  const font = (style, size, color = ink) => { doc.setFont('helvetica', style); doc.setFontSize(size); doc.setTextColor(...color); };
+  const title = kind === 'quote' ? 'QUOTE' : 'INVOICE';
+  const contact = [s.businessPhone, s.businessEmail, s.website].filter(Boolean);
+
+  const footer = () => {
+    doc.setDrawColor(...lime); doc.setLineWidth(1.5); doc.line(L, 742, R, 742);
+    font('bold', 8.5, forest); doc.text('EVERY LINE. EVERY EDGE. EVERY TIME.', 306, 757, { align: 'center', charSpace: 1.2 });
+    font('normal', 8.5, muted); doc.text([s.businessName, ...contact].filter(Boolean).join('   ·   '), 306, 771, { align: 'center' });
+  };
+  const topBand = () => { doc.setFillColor(...forest); doc.rect(0, 0, 612, 10, 'F'); doc.setFillColor(...lime); doc.rect(0, 10, 612, 3, 'F'); };
+
+  // Letterhead
+  topBand();
+  doc.addImage(await imgData('logo-full.jpg'), 'JPEG', L, 30, 156, 82);
+  font('bold', 11, forest); doc.text(s.businessName || 'Precision Cut Lawns', L, 128);
+  font('normal', 9.5, muted); contact.forEach((c, i) => doc.text(c, L, 142 + i * 13));
+
+  font('bold', 30, forest); doc.text(title, R, 62, { align: 'right', charSpace: 2 });
+  // Number / date box
+  const mx = 352, mw = R - mx; let my = 78;
+  doc.setFillColor(...pale); doc.roundedRect(mx, my, mw, 16 + data.meta.length * 17, 4, 4, 'F');
+  data.meta.forEach(([k, v], i) => {
+    const yy = my + 20 + i * 17;
+    font('bold', 8.5, muted); doc.text(k.toUpperCase(), mx + 12, yy);
+    font(k === 'Status' ? 'bold' : 'normal', 10.5, k === 'Status' ? lime : ink); doc.text(String(v), R - 12, yy, { align: 'right' });
+  });
+
+  // Bill to / terms
+  let y = Math.max(190, 142 + contact.length * 13 + 26);
+  const boxH = 30 + Math.max(1, data.to.filter(Boolean).length) * 14 + 16;
+  doc.setDrawColor(...rule); doc.setLineWidth(1);
+  doc.roundedRect(L, y, 250, boxH, 4, 4, 'S'); doc.roundedRect(L + 266, y, W - 266, boxH, 4, 4, 'S');
+  font('bold', 8.5, lime); doc.text(kind === 'quote' ? 'PREPARED FOR' : 'BILL TO', L + 14, y + 18);
+  font('bold', 12.5); doc.text(data.name || '', L + 14, y + 36);
+  font('normal', 10.5, muted); data.to.filter(Boolean).forEach((l, i) => doc.text(l, L + 14, y + 52 + i * 14));
+  font('bold', 8.5, lime); doc.text(kind === 'quote' ? 'QUOTE DETAILS' : 'PAYMENT TERMS', L + 280, y + 18);
+  font('normal', 10.5, ink);
+  doc.text(doc.splitTextToSize(data.terms || '', W - 266 - 28), L + 280, y + 36);
+  y += boxH + 26;
+
+  // Line items
+  const head = () => {
+    doc.setFillColor(...forest); doc.rect(L, y, W, 24, 'F');
+    font('bold', 9, [255, 255, 255]); doc.text('DESCRIPTION', L + 14, y + 16, { charSpace: 0.8 }); doc.text('AMOUNT', R - 14, y + 16, { align: 'right', charSpace: 0.8 });
+    y += 24;
+  };
+  head();
+  data.lines.forEach((l, i) => {
+    const dl = doc.splitTextToSize(l.desc, 370); const h = 14 + dl.length * 14;
+    if (y + h > 690) { footer(); doc.addPage(); topBand(); y = 40; head(); }
+    if (i % 2) { doc.setFillColor(...pale); doc.rect(L, y, W, h, 'F'); }
+    font('normal', 11); doc.text(dl, L + 14, y + 18); doc.text(money2(l.amount), R - 14, y + 18, { align: 'right' });
+    y += h;
+  });
+  doc.setDrawColor(...rule); doc.line(L, y, R, y);
+
+  // Totals
+  y += 16;
+  if (y > 640) { footer(); doc.addPage(); topBand(); y = 40; }
+  if (data.totalLabel) {
+    const tx = 340;
+    doc.setFillColor(...forest); doc.roundedRect(tx, y, R - tx, 32, 4, 4, 'F');
+    font('bold', 12, [255, 255, 255]); doc.text(data.totalLabel.toUpperCase(), tx + 14, y + 21, { charSpace: 0.8 });
+    font('bold', 15, [255, 255, 255]); doc.text(money2(data.total), R - 14, y + 21.5, { align: 'right' });
+    y += 50;
+  } else { font('italic', 10, muted); doc.text('Prices are per service, as listed above.', R, y + 4, { align: 'right' }); y += 26; }
+
+  if (data.paid) {
+    doc.saveGraphicsState(); doc.setGState(new doc.GState({ opacity: 0.16 }));
+    font('bold', 96, lime); doc.text('PAID', 306, Math.min(Math.max(y + 110, 430), 600), { align: 'center', angle: 14 });
+    doc.restoreGraphicsState();
   }
-  doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(...muted);
-  doc.text([s.businessName, s.businessPhone, s.website].filter(Boolean).join('  ·  '), 306, 740, { align: 'center' });
+
+  if (kind === 'invoice' && !data.paid) {
+    const qr = s.zelleQr && /^data:image\/(png|jpe?g)/i.test(s.zelleQr) ? s.zelleQr : '';
+    const h = qr ? 104 : s.venmo ? 78 : 60;
+    if (y + h > 720) { footer(); doc.addPage(); topBand(); y = 40; }
+    doc.setFillColor(...pale); doc.roundedRect(L, y, W, h, 6, 6, 'F');
+    font('bold', 8.5, lime); doc.text('HOW TO PAY', L + 16, y + 20, { charSpace: 0.8 });
+    font('normal', 11); doc.text(`Zelle: send ${money2(data.total)} to ${s.zelle}`, L + 16, y + 40);
+    if (s.venmo) { font('normal', 11, forest); doc.textWithLink(`Venmo: ${s.venmo}`, L + 16, y + 58, { url: s.venmo.startsWith('http') ? s.venmo : 'https://' + s.venmo }); }
+    if (qr) { doc.addImage(qr, /png/i.test(qr.slice(0, 20)) ? 'PNG' : 'JPEG', R - 16 - 80, y + 12, 80, 80); font('normal', 7.5, muted); doc.text('Scan with Zelle', R - 56, y + 100, { align: 'center' }); }
+    y += h + 26;
+  }
+  if (data.notes) {
+    const nl = doc.splitTextToSize(data.notes, W - 32);
+    if (y + 36 + nl.length * 14 > 720) { footer(); doc.addPage(); topBand(); y = 40; }
+    font('bold', 8.5, lime); doc.text('NOTES', L, y, { charSpace: 0.8 });
+    font('normal', 10.5); doc.text(nl, L, y + 16); y += 24 + nl.length * 14;
+  }
+  if (y < 712) {
+    font('bold', 13, forest);
+    doc.text(kind === 'quote' ? 'Thank you for considering Precision Cut Lawns!' : data.paid ? 'Paid in full. Thank you!' : 'Thank you for your business!', 306, Math.max(y + 10, 640), { align: 'center' });
+    if (kind === 'quote') { font('normal', 10, muted); doc.text(`To accept, reply to my text or call ${s.businessPhone}.`, 306, Math.max(y + 10, 640) + 16, { align: 'center' }); }
+  }
+  footer();
+  const pages = doc.getNumberOfPages();
+  if (pages > 1) for (let i = 1; i <= pages; i++) { doc.setPage(i); font('normal', 8, muted); doc.text(`Page ${i} of ${pages}`, R, 30, { align: 'right' }); }
   return doc.output('blob');
 }
 const visitLines = (v) => [{ desc: v.desc || 'Lawn mowing', amount: v.price }, ...(v.addons || []).map((a) => ({ desc: a.name, amount: a.price }))];
 async function invoiceFile(v) {
   const c = cust(v.customerId) || {};
-  const blob = await buildPdf('invoice', { meta: [v.invoiceNo, longDate(v.date)], name: v.customerName, to: [c.address], lines: visitLines(v), totalLabel: 'Total due', total: v.total });
+  const s = settings();
+  const meta = [['Invoice #', v.invoiceNo], ['Date', longDate(v.date)], v.paid ? ['Status', 'PAID'] : ['Due', 'Upon receipt']];
+  const blob = await buildPdf('invoice', { meta, name: v.customerName, to: [c.address, c.phone], lines: visitLines(v), totalLabel: v.paid ? 'Total paid' : 'Total due', total: v.total, paid: !!v.paid,
+    terms: v.paid ? 'Paid in full. Thank you!' : `Due upon receipt. Pay by Zelle to ${s.zelle}${s.venmo ? ' or by Venmo' : ''}.` });
   return new File([blob], `Precision Cut Invoice ${v.invoiceNo}.pdf`, { type: 'application/pdf' });
 }
 async function quoteFile(q) {
@@ -162,7 +228,10 @@ async function quoteFile(q) {
   if (q.snowPrice) lines.push({ desc: q.snowPlan === 'seasonal' ? 'Snow removal - full season' : 'Snow removal - per visit, on request', amount: q.snowPrice });
   (q.addons || []).forEach((a) => lines.push({ desc: a.name, amount: a.price }));
   const total = lines.reduce((a, l) => a + l.amount, 0);
-  const blob = await buildPdf('quote', { meta: [`Q-${q.number}`, longDate(q.date), 'Good for 30 days'], name: q.name, to: [q.address, q.phone], lines, totalLabel: q.grassPrice && q.snowPrice ? '' : 'Total', total, notes: q.notes });
+  const until = parseYmd(q.date); until.setDate(until.getDate() + 30);
+  const blob = await buildPdf('quote', { meta: [['Quote #', `Q-${q.number}`], ['Date', longDate(q.date)], ['Valid until', longDate(ymd(until))]], name: q.name, to: [q.address, q.phone],
+    lines, totalLabel: q.grassPrice && q.snowPrice ? '' : 'Estimated total', total, notes: q.notes,
+    terms: `Prices are good for 30 days. Prepared by Jace, ${settings().businessName}.` });
   return new File([blob], `Precision Cut Quote ${q.name || q.number}.pdf`, { type: 'application/pdf' });
 }
 // Opens the phone's share sheet with the PDF + message (pick Messages). Falls back to download + text.
@@ -311,7 +380,7 @@ function renderStaff() {
   if (state.tab === 'customers' && state.custId) titles[0] = state.editing ? (cust(state.custId) ? 'Edit customer' : 'New customer') : 'Customer';
   if (state.tab === 'customers' && state.editing && !state.custId) titles[0] = 'New customer';
   app.innerHTML = `
-    <header class="top"><div class="top-row"><div class="wordmark">PRECISION <span>CUT</span></div>
+    <header class="top"><div class="top-row">${brand()}
       <button class="link" data-a="signOut">${esc(state.account.name || state.user.email)} · Sign out</button></div>
       <h1>${esc(titles[0])}</h1><div class="sub">${esc(titles[1])}</div></header>
     ${demoBar()}
@@ -632,7 +701,7 @@ function viewSettings() {
         <label class="btn btn-ghost full" style="margin-top:6px">Upload Zelle QR<input type="file" accept="image/*" data-change="zelleQr" class="sr"></label></div>
       ${field('venmo', 'Venmo link (business)', 'e.g. venmo.com/u/PrecisionCutLawns')}
       <div class="muted small">Customers see these with a QR code and a Pay button in their account. Venmo shows once it’s filled in.</div>`),
-    fold('business', 'Business info', esc(s.businessPhone), `${field('businessPhone', 'Phone on quotes and invoices')}${field('website', 'Website link', 'Add your website')}`),
+    fold('business', 'Business info', esc(s.businessPhone), `${field('businessPhone', 'Phone on quotes and invoices')}${field('businessEmail', 'Email on quotes and invoices')}${field('website', 'Website link', 'Add your website')}`),
     fold('skips', 'Skips', `Deadline: ${esc(deadlineText(weekStart(new Date())))}`, `<div class="muted small">Customers get 1 free skip a month. They can skip until:</div>
       <div class="grid2"><label class="f"><span class="lbl">Day</span><select class="inp" data-setting="skipDay">${DAYS.map((d, i) => `<option value="${i}" ${Number(s.skipDay) === i ? 'selected' : ''}>${d}</option>`).join('')}</select></label>
         <label class="f"><span class="lbl">Time</span><input class="inp" type="time" data-setting="skipTime" value="${esc(s.skipTime)}"></label></div>`),
@@ -705,7 +774,7 @@ function renderCustomerHome() {
         ${openSnow ? `<div class="okbar">Snow removal requested ${shortDate(ymd(new Date(openSnow.at)))}. I’m on it!</div>` : `<div class="muted">Need your snow cleared? Tap below and I’ll get you on the list.</div><button class="btn btn-lime" data-a="custRequest" data-type="snow">Request snow removal</button>`}</div>`;
   }
   app.innerHTML = `${demoBar()}
-    <header class="top"><div class="top-row"><div class="wordmark">PRECISION <span>CUT</span></div><button class="link" data-a="signOut">Sign out</button></div>
+    <header class="top"><div class="top-row">${brand()}<button class="link" data-a="signOut">Sign out</button></div>
       <h1>Hi ${esc(first(c.name))}!</h1><div class="sub">${esc(c.address || '')}</div></header>
     <main class="no-tabs">
       ${grassCard}${snowCard}
@@ -723,14 +792,17 @@ function renderCustomerHome() {
         <div class="flex"><button class="btn btn-primary grow" data-a="custRequest" data-type="message">Send in the app</button><a class="btn btn-ghost" href="${smsHref(s.businessPhone, '')}">Text instead</a></div></div>
       ${paid.length ? `<button class="link" data-a="togglePaid">${state.showPaidHistory ? 'Hide' : 'Show'} paid invoices (${paid.length})</button>
         ${state.showPaidHistory ? `<div class="card list">${paid.map((v) => `<div class="line"><div class="grow"><div>${shortDate(v.date)} · ${esc(v.desc || 'Lawn mowing')}</div></div><b>${money(v.total)}</b><button class="link" style="margin-left:10px;min-height:32px" data-a="custPdf" data-id="${v.id}">PDF</button></div>`).join('')}</div>` : ''}` : ''}
-      <div class="muted small center">${esc([s.businessName, s.businessPhone, s.website].filter(Boolean).join(' · '))}</div>
+      <div class="bizfoot"><img src="logo-full.jpg" alt="Precision Cut Lawns">
+        <div class="motto">EVERY LINE. EVERY EDGE. EVERY TIME.</div>
+        <div class="muted small">${[s.businessPhone ? `<a href="tel:${esc(s.businessPhone)}">${esc(s.businessPhone)}</a>` : '', s.businessEmail ? `<a href="mailto:${esc(s.businessEmail)}">${esc(s.businessEmail)}</a>` : '', s.website ? esc(s.website) : ''].filter(Boolean).join(' · ')}</div></div>
     </main>`;
   if (location.hash === '#skip') document.getElementById('skip')?.scrollIntoView({ block: 'center' });
 }
 
+const brand = () => '<div class="brand"><img src="logo-mark.png" alt="" class="brandmark"><div class="wordmark">PRECISION <span>CUT</span><small>LAWNS</small></div></div>';
 /* ----- Sign-in screens ----- */
 const authCard = (inner) => `<div class="auth"><div class="card">
-  <img src="logo.jpg" alt="Precision Cut logo" class="logo"><h1>Precision Cut Lawns</h1>
+  <img src="logo-full.jpg" alt="Precision Cut logo" class="logo"><h1>Precision Cut Lawns</h1>
   ${state.authMsg ? `<p class="msg">${esc(state.authMsg)}</p>` : ''}${inner}</div></div>`;
 function renderSignIn() {
   if (joinCode() && !state.authModeSet) state.authMode = backFromEmail ? 'in' : 'up';
@@ -761,7 +833,7 @@ function renderJoin() {
 }
 function renderNoAccess() {
   app.innerHTML = authCard(state.setupDone
-    ? `<p>You’re signed in as <b>${esc(state.user.email)}</b>, but this email doesn’t have access yet. Ask Jace to add you, using this exact email.</p><button class="btn btn-ghost" data-a="signOut">Sign out</button>`
+    ? `<p>You’re signed in as <b>${esc(state.user.email)}</b>, but this account isn’t set up yet. Ask Jace for an invite link, then tap it to finish joining.</p><button class="btn btn-ghost" data-a="signOut">Sign out</button>`
     : `<p>No one has set up this app yet. Set it up now and <b>${esc(state.user.email)}</b> becomes the admin.</p>
       <label class="f"><span class="lbl">Your name</span><input class="inp" id="setup_name" value="Jace"></label>
       <button class="btn btn-primary" data-a="claimSetup">Set up as admin</button><button class="link center" data-a="signOut">Sign out</button>`);
