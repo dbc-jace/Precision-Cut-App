@@ -330,6 +330,26 @@ async function checkAccess() {
     subscribe(); render();
   } catch (e) { console.error(e); state.access = 'none'; state.setupDone = true; render(); }
 }
+// Emails Jace when someone uses an invite link, so he knows to set up their account.
+// Goes to the admin email the app was set up with, through FormSubmit (free, no server; no-reply sender).
+// The very first email asks you to tap "Activate" once.
+async function sendAlert(to, subject, fields) {
+  const r = await fetch('https://formsubmit.co/ajax/' + encodeURIComponent(to), {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ _subject: subject, _template: 'table', _captcha: 'false', ...fields }),
+  });
+  if (!r.ok) throw new Error('email failed ' + r.status);
+}
+async function notifyJoined(name, email) {
+  try {
+    const owner = (await store.getDoc('meta', 'setup'))?.owner; if (!owner) return;
+    const role = state.account?.role || 'customer';
+    await sendAlert(owner, `New ${role} sign-up: ${name}`, {
+      Name: name, Email: email, Role: role, When: new Date().toLocaleString('en-US'),
+      'Next step': role === 'customer' ? 'Open the app > Customers > ' + name + ' > Edit to add their phone, address and plans.' : 'They can see the route now.',
+    });
+  } catch (e) { console.warn('Sign-up email not sent', e); }
+}
 async function seedDemo() {
   await store.claimSetup('admin@demo', 'Jace (demo)');
   await store.set('users', 'crew@demo', { name: 'Crew member (demo)', role: 'crew' });
@@ -719,6 +739,8 @@ function viewSettings() {
         <div class="muted small">Made ${shortDate(ymd(new Date(i.createdAt)))} · not used yet</div></div>
         <button class="link" style="min-height:32px" data-a="resendInvite" data-id="${i.id}">Send</button>
         <button class="link danger" style="margin-left:10px;min-height:32px" data-a="cancelInvite" data-id="${i.id}">Cancel</button></div>`).join('')}</div>` : ''}
+      <div class="muted small">You get an email each time someone uses an invite link. Tap below once to turn it on: you'll get an "Activate" email from FormSubmit; tap the button in it.</div>
+      <button class="btn btn-ghost" data-a="testAlert">Send a test sign-up email</button>
       <div class="b" style="margin-top:6px">People with access</div>
       <div class="card list" style="padding:0 0 0 0;border:0">${users.map((u) => `<div class="line"><div class="grow"><div class="b">${esc(u.name)}</div><div class="muted small">${esc(u.id)}</div></div>
         ${pill(u.role === 'admin' ? 'p-green' : u.role === 'crew' ? 'p-blue' : 'p-gray', u.role[0].toUpperCase() + u.role.slice(1))}
@@ -1042,6 +1064,11 @@ const A = {
     const tpl = u.role === 'crew' ? welcomeTpl('welcomeCrew') : welcomeTpl('welcomeCustomer');
     openText('Welcome text', fill(tpl, { first: first(u.name), link: appLink(), email: u.id }), c?.phone);
   },
+  async testAlert() {
+    if (store.mode !== 'shared') return toast('Connect Firebase first');
+    try { await sendAlert(state.user.email, 'Precision Cut: test sign-up email', { Note: 'Sign-up emails are working.' }); toast('Sent to ' + state.user.email + '. Check your email (and spam).'); }
+    catch (e) { console.error(e); toast('Could not send the test email'); }
+  },
   removeUser(el) { if (!confirm(`Remove app access for ${el.dataset.email}?`)) return; store.remove('users', el.dataset.email); toast('Access removed'); },
   billSeason(el) {
     const c = cust(el.dataset.cid), y = new Date().getFullYear(), m = new Date().getMonth();
@@ -1199,6 +1226,7 @@ const A = {
       await store.redeemInvite(joinCode(), state.user.email, name);
       localStorage.removeItem(JOIN_KEY);
       await checkAccess();
+      if (store.mode === 'shared') notifyJoined(name, state.user.email);
     } catch (e) {
       console.error(e);
       localStorage.removeItem(JOIN_KEY);
