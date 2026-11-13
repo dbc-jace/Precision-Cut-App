@@ -9,7 +9,14 @@ html, body { margin: 0; min-height: 100%; background: var(--paper); color: var(-
 button, input, select, textarea { font: inherit; color: inherit; }
 a { color: #1F4630; }
 .center { text-align: center; }
-.wordmark { font-weight: 800; letter-spacing: .12em; font-size: 13px; }
+.wordmark { font-weight: 800; letter-spacing: .12em; font-size: 13px; line-height: 1.15; }
+.wordmark small { display: block; font-size: 9px; letter-spacing: .32em; color: #C9D6CD; font-weight: 700; }
+.brand { display: flex; align-items: center; gap: 10px; }
+.brandmark { width: 38px; height: 38px; border-radius: 10px; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.25); flex: none; }
+.bizfoot { display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; padding: 18px 8px 8px; border-top: 1px solid var(--line, #DCE2DA); margin-top: 8px; }
+.bizfoot img { width: 150px; height: auto; }
+.bizfoot .motto { font-size: 10.5px; font-weight: 800; letter-spacing: .14em; color: var(--forest); }
+.bizfoot a { color: inherit; }
 .wordmark span { color: var(--lime); }
 
 /* Header, content, tabs */
