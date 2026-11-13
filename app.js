@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.13.4';
+import { createStore, newId } from './store.js?v=2026.11.13.5';
 
-const APP_VERSION = '2026.11.13.4'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.13.5'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -91,11 +91,13 @@ function inviteIdFor(cid, pending) {
   if (open) return open.id;
   return (pending[cid || '_new'] ??= newId());
 }
-function saveInvite(cid, pending) {
+function saveInvite(cid, pending, label) {
   const id = pending[cid || '_new'];
   if (!id || state.invites.some((i) => i.id === id)) return;
-  store.set('invites', id, { role: 'customer', ...(cid ? { customerId: cid } : {}), createdAt: Date.now(), createdBy: state.user.email });
+  store.set('invites', id, { role: 'customer', ...(cid ? { customerId: cid } : {}), ...(label ? { label } : {}), createdAt: Date.now(), createdBy: state.user.email });
 }
+// Phone contact picker (Android Chrome; iPhone only if Safari's "Contact Picker API" feature flag is on).
+const canPickContact = () => 'contacts' in navigator && 'ContactsManager' in window;
 function fillMsg(body, c, pending) {
   const s = settings();
   return fill(body, { first: first(c?.name), name: c?.name || '', link: appLink(), phone: s.businessPhone, zelle: s.zelle, venmo: s.venmo ? ' or Venmo ' + s.venmo : '', website: s.website || '',
@@ -765,10 +767,12 @@ function viewSettings() {
       <button class="btn btn-primary" data-a="newInvite" data-role="customer">Customer invite link</button>
       <button class="btn btn-ghost" data-a="newInvite" data-role="crew">Crew invite link</button>
       ${openInvites.length ? `<div class="b" style="margin-top:6px">Open invite links</div>
-      <div class="card list" style="padding:0;border:0">${openInvites.map((i) => `<div class="line"><div class="grow"><div class="b">${i.customerId && cust(i.customerId) ? esc(cust(i.customerId).name) : i.role === 'crew' ? 'Crew' : 'New customer'}</div>
-        <div class="muted small">Made ${shortDate(ymd(new Date(i.createdAt)))} · not used yet</div></div>
+      <div class="card list" style="padding:0;border:0">${openInvites.map((i) => `<div class="line"><div class="grow"><div class="b">${i.customerId && cust(i.customerId) ? esc(cust(i.customerId).name) : i.label ? esc(i.label) : i.role === 'crew' ? 'Crew (no name)' : 'New customer (no name)'}</div>
+        <div class="muted small">Made ${new Date(i.createdAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })} · not used yet · <span class="mono">…${esc(i.id.slice(-4))}</span></div></div>
+        ${i.customerId ? '' : `<button class="link" style="min-height:32px;margin-right:10px" data-a="labelInvite" data-id="${i.id}">Name</button>`}
         <button class="link" style="min-height:32px" data-a="resendInvite" data-id="${i.id}">Send</button>
         <button class="link danger" style="margin-left:10px;min-height:32px" data-a="cancelInvite" data-id="${i.id}">Cancel</button></div>`).join('')}</div>` : ''}
+      <div class="muted small">Each link works once. The last 4 characters (…ab12) match the end of the link in the text you sent, so you can tell them apart in Messages. Not sure who one was for? Leave it and make a fresh link for that person.</div>
       <div class="muted small">You get an email each time someone uses an invite link. Tap the test button once to turn it on (and again any time you change the address): FormSubmit sends an "Activate" email to that address; tap the button in it.</div>
       ${field('alertEmail', 'Send sign-up emails to', state.user.email)}
       <button class="btn btn-ghost" data-a="testAlert">Send a test sign-up email</button>
@@ -971,6 +975,8 @@ function renderSheet() {
     inner = `<div class="b" style="font-size:20px">${sh.pickTo ? 'Send message' : 'Text ' + esc(c?.name || '')}</div>
       ${sh.pickTo ? `<label class="f"><span class="lbl">To</span><select class="inp" data-change="composeTo"><option value="">Someone in my phone’s contacts (pick in Messages)</option>
         ${[...state.customers].filter((x) => x.phone).sort(byName).map((x) => `<option value="${x.id}" ${x.id === sh.cid ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label>` : ''}
+      ${sh.pickTo && !c && needsInvite(sh.tpl || '') ? `<label class="f"><span class="lbl">Who’s this for? <span class="muted small">(shows on the invite list)</span></span><input class="inp" id="cm_label" autocomplete="off" placeholder="Their name" value="${esc(sh.label || '')}"></label>
+        ${canPickContact() ? `<button class="btn btn-ghost" data-a="pickContact">${sh.contactPhone ? 'To: ' + esc(sh.contactPhone) + ' · change' : 'Pick from my contacts'}</button>` : ''}` : ''}
       <div class="muted small">${sh.pickTo && !c ? 'Messages opens with the text filled in. Type a name or number in the To line, then tap send.' : 'Change anything you like, then open Messages and tap send.'}</div>
       <label class="f"><span class="sr">Message</span><textarea class="inp" id="cm_body" rows="9">${esc(sh.body)}</textarea></label>
       <button class="btn btn-primary" data-a="sendCompose">Open in Messages</button><button class="btn btn-ghost" data-a="closeSheet">Cancel</button>`;
@@ -1006,15 +1012,21 @@ function addSnowStop(cid, date) {
 const snowDesc = (stop) => 'Snow removal' + ((stop?.visit || 1) > 1 ? ` - visit ${stop.visit}` : '');
 const openText = (title, body, phone, link) => { state.sheet = { kind: 'text', title, body, phone, link }; renderSheet(); };
 function makeInvite(role, customerId) {
+  let label = '';
+  if (!customerId) {
+    const ans = prompt(role === 'crew' ? 'Who is this crew invite for? (so you can tell the links apart)' : 'Who is this invite for? (so you can tell the links apart)', '');
+    if (ans === null) return; // cancelled
+    label = ans.trim();
+  }
   const id = newId();
-  const data = { role, createdAt: Date.now(), createdBy: state.user.email, ...(customerId ? { customerId } : {}) };
+  const data = { role, createdAt: Date.now(), createdBy: state.user.email, ...(customerId ? { customerId } : {}), ...(label ? { label } : {}) };
   store.set('invites', id, data);
   sendInvite({ id, ...data });
 }
 function sendInvite(i) {
   const c = i.customerId && cust(i.customerId);
   const tpl = welcomeTpl(i.role === 'crew' ? 'welcomeCrew' : 'welcomeCustomer');
-  const who = c ? first(c.name) : 'there';
+  const who = c ? first(c.name) : i.label ? first(i.label) : 'there';
   openText(c ? 'Invite for ' + who : i.role === 'crew' ? 'Crew invite link' : 'Customer invite link',
     fill(tpl, { first: who, link: inviteLink(i.id), email: '' }), c?.phone || '', inviteLink(i.id));
 }
@@ -1051,9 +1063,22 @@ const A = {
   },
   sendCompose() {
     const sh = state.sheet, c = cust(sh.cid), body = val('cm_body'), key = c ? c.id : '_new';
-    if (sh.pending[key] && body.includes(sh.pending[key])) saveInvite(c?.id || '', sh.pending);
+    const label = c ? '' : (document.getElementById('cm_label')?.value || '').trim();
+    if (sh.pending[key] && body.includes(sh.pending[key])) {
+      if (!c && document.getElementById('cm_label') && !label && !confirm('Send without a name? The invite will just say "New customer" in your list.')) return;
+      saveInvite(c?.id || '', sh.pending, label);
+    }
     state.sheet = null; renderSheet();
-    location.href = smsHref(c?.phone || '', body);
+    location.href = smsHref(c?.phone || sh.contactPhone || '', body);
+  },
+  async pickContact() {
+    const sh = state.sheet;
+    try {
+      const [p] = await navigator.contacts.select(['name', 'tel'], { multiple: false });
+      if (!p) return;
+      sh.body = val('cm_body'); sh.label = p.name?.[0] || (document.getElementById('cm_label')?.value || '');
+      sh.contactPhone = p.tel?.[0] || ''; renderSheet();
+    } catch (e) { console.error(e); toast('Couldn’t open contacts. Type their name instead.'); }
   },
   bulkPick() { state.sheet = { kind: 'pickMsg', cid: '' }; renderSheet(); },
   bulkList(el) {
@@ -1174,6 +1199,11 @@ const A = {
   inviteCustomer(el) { makeInvite('customer', el.dataset.cid); },
   newInvite(el) { makeInvite(el.dataset.role); },
   resendInvite(el) { const i = state.invites.find((x) => x.id === el.dataset.id); if (i) sendInvite(i); },
+  labelInvite(el) {
+    const i = state.invites.find((x) => x.id === el.dataset.id); if (!i) return;
+    const ans = prompt('Who is this invite for?', i.label || ''); if (ans === null) return;
+    store.update('invites', i.id, { label: ans.trim() }); toast(ans.trim() ? 'Named' : 'Name cleared');
+  },
   cancelInvite(el) { if (!confirm('Cancel this invite link? It will stop working.')) return; store.remove('invites', el.dataset.id); toast('Invite cancelled'); },
   reinvite(el) {
     const u = state.users.find((x) => x.id === el.dataset.email); const c = u?.customerId && cust(u.customerId);
@@ -1435,7 +1465,7 @@ document.addEventListener('change', async (ev) => {
   if (el.dataset.setting && (el.tagName === 'SELECT' || el.type === 'checkbox' || el.type === 'time')) return saveSetting(el);
   const k = el.dataset.change;
   if (k === 'setDay') store.update('stops', el.dataset.id, { customerId: el.dataset.cid, weekId: state.week, type: 'grass', status: stopOf(el.dataset.id)?.status || 'scheduled', day: el.value === '' ? null : Number(el.value) });
-  if (k === 'composeTo') { const sh = state.sheet; sh.cid = el.value; sh.body = fillMsg(sh.tpl, cust(sh.cid), sh.pending); renderSheet(); }
+  if (k === 'composeTo') { const sh = state.sheet; sh.label = document.getElementById('cm_label')?.value || sh.label; sh.cid = el.value; sh.body = fillMsg(sh.tpl, cust(sh.cid), sh.pending); renderSheet(); }
   if (k === 'bulkSkip') { state.sheet.skipMembers = el.checked; renderSheet(); }
   if (k === 'snowDate') { state.snowDate = el.value || today(); render(); }
   if (k === 'demoAs') { localStorage.setItem('pc_demo_as', el.value); location.reload(); }
