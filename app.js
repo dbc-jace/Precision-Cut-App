@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.13.13';
+import { createStore, newId } from './store.js?v=2026.11.13.14';
 
-const APP_VERSION = '2026.11.13.13'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.13.14'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -846,6 +846,13 @@ function viewSettings() {
   const users = [...state.users].filter((u) => !u.id.endsWith('@demo') || u.role !== 'customer')
     .sort((a, b) => ({ admin: 0, crew: 1, customer: 2 }[a.role] - { admin: 0, crew: 1, customer: 2 }[b.role]) || byName(a, b));
   const openInvites = state.invites.filter((i) => !i.usedBy).sort((a, b) => b.createdAt - a.createdAt);
+  // One row per person: staff by login, customers grouped by account (e.g. Joe with two emails, or husband and wife).
+  const people = [];
+  users.forEach((u) => {
+    const c = u.role === 'customer' && u.customerId && cust(u.customerId);
+    const row = c && people.find((r) => r.cid === c.id);
+    if (row) row.logins.push(u); else people.push({ cid: c ? c.id : null, name: c ? bothNames(c) : u.name, role: u.role, logins: [u] });
+  });
   const msg = (k, title, hint) => fold('msg_' + k, title, hint, field(k, 'Text', '', true), true);
   return [
     fold('addons', 'Add-ons', `${addons.length} saved`, `<div class="muted">Extras you can add when you mark a job done, or on a quote. You can change the price each time.</div>
@@ -873,7 +880,7 @@ function viewSettings() {
         <button class="link danger" style="align-self:flex-start;min-height:32px" data-a="delCustomMsg" data-id="${esc(m.id)}">Delete this message</button>`, true)).join('')}
       <div class="muted small">Your own messages can also use {invite} (a sign-up link just for that person), {name} full name and {website}.</div>
       <button class="btn btn-ghost" data-a="addCustomMsg">+ New message</button>`),
-    fold('users', 'Users', `${users.length} with access${openInvites.length ? ` · ${openInvites.length} open invite${openInvites.length === 1 ? '' : 's'}` : ''}`, `<div class="b">Invite someone</div>
+    fold('users', 'Users', `${people.length} with access${openInvites.length ? ` · ${openInvites.length} open invite${openInvites.length === 1 ? '' : 's'}` : ''}`, `<div class="b">Invite someone</div>
       <div class="muted small">Makes a link you can text or copy to anyone. They tap it, sign up with any email, and type their name. New customers show up in Customers so you can fill in the rest. Each link works once.</div>
       <button class="btn btn-primary" data-a="newInvite" data-role="customer">Customer invite link</button>
       <button class="btn btn-ghost" data-a="newInvite" data-role="crew">Crew invite link</button>
@@ -888,9 +895,11 @@ function viewSettings() {
       ${field('alertEmail', 'Send sign-up emails to', state.user.email)}
       <button class="btn btn-ghost" data-a="testAlert">Send a test sign-up email</button>
       <div class="b" style="margin-top:6px">People with access</div>
-      <div class="card list" style="padding:0 0 0 0;border:0">${users.map((u) => `<div class="line"><div class="grow"><div class="b">${esc(u.name)}</div><div class="muted small">${esc(u.id)}</div></div>
-        ${pill(u.role === 'admin' ? 'p-green' : u.role === 'crew' ? 'p-blue' : 'p-gray', u.role[0].toUpperCase() + u.role.slice(1))}
-        ${u.id !== state.user.email ? `<button class="link danger" style="margin-left:10px;min-height:32px" data-a="removeUser" data-email="${esc(u.id)}">Remove</button>` : ''}</div>`).join('')}</div>`),
+      <div class="card list" style="padding:0 0 0 0;border:0">${people.map((r) => `<div class="line" style="align-items:flex-start"><div class="grow"><div class="b">${esc(r.name)}</div>
+          ${r.logins.map((u) => `<div class="between"><span class="muted small">${esc(u.id)}${r.logins.length > 1 && u.name && u.name !== r.name ? ' · ' + esc(u.name) : ''}</span>
+            ${u.id !== state.user.email ? `<button class="link danger" style="min-height:32px;margin-left:10px" data-a="removeUser" data-email="${esc(u.id)}">Remove</button>` : ''}</div>`).join('')}
+          ${r.logins.length > 1 ? `<div class="muted small">${r.logins.length} logins, one account</div>` : ''}</div>
+        ${pill(r.role === 'admin' ? 'p-green' : r.role === 'crew' ? 'p-blue' : 'p-gray', r.role[0].toUpperCase() + r.role.slice(1))}</div>`).join('')}</div>`),
     fold('security', 'Security (this phone)', lock ? `Passcode lock on · ${lock.minutes} min` : 'Passcode lock off', `<div class="muted small">Ask for a 4-digit passcode when the app opens or sits idle, even while you stay signed in.</div>
       ${lock ? `<div class="flex"><button class="btn btn-ghost grow" data-a="setLock">Change</button><button class="btn btn-danger grow" data-a="clearLock">Turn off</button></div>` : '<button class="btn btn-primary" data-a="setLock">Turn on passcode lock</button>'}`),
     fold('backup', 'Backup', 'Download a full copy', `<div class="muted small">Your data is saved in Firebase automatically. Download a full copy now and then to keep on your phone or computer.</div>
