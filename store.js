@@ -34,31 +34,11 @@ async function firebaseStore(onError) {
     onAuth(cb) { au.onAuthStateChanged(auth, (u) => cb(toUser(u))); },
     signInGoogle() { return au.signInWithPopup(auth, new au.GoogleAuthProvider()); },
     signIn(email, pw) { return au.signInWithEmailAndPassword(auth, email, pw); },
-    // continueUrl puts a "Continue" button on the "email confirmed" page that brings them back to the app.
-    // If Firebase rejects the Continue address (domain not on its authorized list), send the email
-    // anyway without the button, so the person always gets a link to confirm with.
-    async sendVerify(user, continueUrl) {
-      try { await au.sendEmailVerification(user, continueUrl ? { url: continueUrl } : undefined); }
-      catch (e) {
-        if (continueUrl && /continue-uri|unauthorized-domain|missing-continue|argument-error/.test(e.code || '')) {
-          console.warn('Continue link rejected, sending plain confirmation email', e);
-          await au.sendEmailVerification(user);
-        } else throw e;
-      }
-    },
-    async signUp(email, pw, continueUrl) {
-      const cred = await au.createUserWithEmailAndPassword(auth, email, pw);
-      await this.sendVerify(cred.user, continueUrl);
-    },
-    resendVerification(continueUrl) { return this.sendVerify(auth.currentUser, continueUrl); },
-    async reloadUser() {
-      await auth.currentUser.reload();
-      await auth.currentUser.getIdToken(true); // refresh so the database sees "verified"
-      return toUser(auth.currentUser);
-    },
+    // No confirmation email: Firebase's often never arrived and left customers stuck.
+    // The one-time invite link (texted to their phone) is the check instead.
+    signUp(email, pw) { return au.createUserWithEmailAndPassword(auth, email, pw); },
     resetPassword(email) { return au.sendPasswordResetEmail(auth, email); },
     signOut() { return au.signOut(auth); },
-    currentEmail() { return (auth.currentUser?.email || '').toLowerCase(); },
 
     // ---- data ----
     watch(name, cb) { return fs.onSnapshot(fs.collection(db, name), (s) => cb(docs(s)), fail); },
