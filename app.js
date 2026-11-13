@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.13.1';
+import { createStore, newId } from './store.js?v=2026.11.13.2';
 
-const APP_VERSION = '2026.11.13.1'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.13.2'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -54,6 +54,8 @@ const DEFAULTS = {
   receiptMsg: 'Got it, thanks {first}! Received {total} for {date}. - Precision Cut Lawns',
   quoteMsg: 'Hi {first}, here\'s your quote from Precision Cut Lawns. Call or text {phone} with any questions!',
   welcomeCustomer: 'Hi {first}! Welcome to Precision Cut Lawns. Tap this link to set up your account, where you can see your schedule, skip a week, request snow removal and pay your invoices:\n\n{link}\n\nTip: tap Share, then "Add to Home Screen" to keep it handy. - Jace',
+  // Saved messages Jace writes himself (Settings > Messages > My saved messages). Pick one from a customer's page or "Text customers".
+  customMsgs: [{ id: 'acct', title: 'Create your account', body: 'Hi {first}, it\'s Jace with Precision Cut Lawns! I now have an app for my customers. Tap this link to create your account, where you can see your schedule, skip a week, request snow removal and pay invoices:\n\n{invite}\n\nThe link is just for you. Tip: once you\'re in, tap Share, then "Add to Home Screen" to keep it handy. Thanks! - Jace' }],
   welcomeCrew: 'Hey {first}, welcome to the Precision Cut crew! Tap this link to set up your account and see the route:\n\n{link}\n\nTap Share, then "Add to Home Screen" to keep it handy.',
 };
 const settings = () => ({ ...DEFAULTS, ...(state.settingsDoc || {}) });
@@ -80,6 +82,24 @@ const inviteLink = (code) => appLink() + '#join=' + code;
 // Where the email-confirmation link sends them back to (keeps their invite attached).
 const returnLink = () => appLink() + (joinCode() ? '?join=' + joinCode() : '');
 // Older saved welcome texts said "sign in with this email"; invite links don't need one.
+const customMsgs = () => (Array.isArray(settings().customMsgs) ? settings().customMsgs : []);
+const needsInvite = (body) => /\{invite\}/.test(body);
+// A one-time sign-up link for this customer: reuses their open invite, else makes a new id (saved when the text is sent).
+function inviteIdFor(cid, pending) {
+  const open = state.invites.find((i) => i.customerId === cid && !i.usedBy && i.role === 'customer');
+  if (open) return open.id;
+  return (pending[cid] ??= newId());
+}
+function saveInvite(cid, pending) {
+  const id = pending[cid];
+  if (!id || state.invites.some((i) => i.id === id)) return;
+  store.set('invites', id, { role: 'customer', customerId: cid, createdAt: Date.now(), createdBy: state.user.email });
+}
+function fillMsg(body, c, pending) {
+  const s = settings();
+  return fill(body, { first: first(c?.name), name: c?.name || '', link: appLink(), phone: s.businessPhone, zelle: s.zelle, venmo: s.venmo ? ' or Venmo ' + s.venmo : '', website: s.website || '',
+    invite: c && needsInvite(body) ? inviteLink(inviteIdFor(c.id, pending)) : appLink() });
+}
 const welcomeTpl = (key) => (/\{email\}/.test(settings()[key]) ? DEFAULTS[key] : settings()[key]);
 
 const role = () => state.account?.role;
@@ -518,6 +538,7 @@ function viewCustomers() {
   const svc = (c) => [c.grass && 'Grass', c.snow && 'Snow'].filter(Boolean).join(' + ') || 'No services';
   return `<div class="flex"><label class="grow"><span class="sr">Search customers</span><input class="inp" id="search" placeholder="Search name, address or phone" value="${esc(state.q)}" data-input="search"></label>
       ${isAdmin() ? '<button class="btn btn-primary" data-a="newCust">+ Add</button>' : ''}</div>
+    ${isAdmin() && state.customers.length ? '<button class="btn btn-ghost" data-a="bulkPick">Text customers a saved message</button>' : ''}
     ${list.length ? list.map((c) => `<button class="rowbtn" data-a="openCust" data-id="${c.id}"><div class="avatar">${esc(initials(c.name))}</div>
       <div class="grow"><div class="b">${esc(c.name)}</div><div class="muted">${esc(c.address || 'No address')}</div></div>
       <div style="text-align:right">${isAdmin() && priceOf(c.id).grass ? `<div class="b">${money(priceOf(c.id).grass)}</div>` : ''}<div class="muted small">${c.active ? svc(c) : 'Paused'}</div></div></button>`).join('')
@@ -531,6 +552,7 @@ function viewCustomer() {
   return `<button class="link" data-a="backToList">← All customers</button>
     <div class="card"><div class="between"><div class="b" style="font-size:20px">${esc(c.name)}</div>${admin ? '<button class="btn btn-ghost btn-sm" data-a="editCust">Edit</button>' : ''}</div>
       <div><div class="lbl">Phone</div><div>${c.phone ? `<a href="tel:+1${firstPhone(c.phone)}">${esc(c.phone)}</a> · <a href="${smsHref(c.phone, '')}">Text</a>` : '—'}</div></div>
+      ${admin && c.phone ? `<button class="btn btn-ghost" data-a="pickMsg" data-cid="${c.id}">Send a saved message</button>` : ''}
       <div><div class="lbl">Address</div><div>${c.address ? `<a href="https://maps.apple.com/?q=${encodeURIComponent(c.address)}">${esc(c.address)}</a>` : '—'}</div></div>
       ${admin && c.email ? `<div><div class="lbl">Email</div><div>${esc(c.email)}</div></div>` : ''}
       <div class="grid2"><div><div class="lbl">Deck height</div><div>${esc(c.deck || '—')}</div></div><div><div class="lbl">Status</div><div>${c.active ? 'Active' : 'Paused'}</div></div></div>
@@ -730,6 +752,12 @@ function viewSettings() {
       ${msg('reminderMsg', 'Weekly reminder', 'Wednesdays, with the skip link')}${msg('oncallMsg', 'On-call text', '“Would you like your grass cut today?”')}
       ${msg('invoiceMsg', 'Invoice text', 'Sent with the PDF')}
       ${fold('msg_receipt', 'Receipt text', s.receiptEnabled ? 'On' : 'Off', `<label class="check"><input type="checkbox" data-setting="receiptEnabled" ${s.receiptEnabled ? 'checked' : ''}> Offer a receipt text when I mark Paid</label>${field('receiptMsg', 'Text', '', true)}`, true)}
+      ${fold('msg_custom', 'My saved messages', `${customMsgs().length} saved · send from a customer’s page or “Text customers”`, `<div class="muted small">Write your own texts. Also works here: {invite} their own sign-up link, {name} full name, {website}.</div>
+        ${customMsgs().map((m) => `<div class="card" style="background:#F4F6F2">
+          <label class="f"><span class="lbl">Name</span><input class="inp" data-cmsg="${esc(m.id)}" data-field="title" value="${esc(m.title)}" placeholder="e.g. Spring sign-up"></label>
+          <label class="f"><span class="lbl">Text</span><textarea class="inp" data-cmsg="${esc(m.id)}" data-field="body" rows="6">${esc(m.body)}</textarea></label>
+          <button class="link danger" style="align-self:flex-start;min-height:32px" data-a="delCustomMsg" data-id="${esc(m.id)}">Delete</button></div>`).join('')}
+        <button class="btn btn-ghost" data-a="addCustomMsg">+ New message</button>`, true)}
       ${msg('quoteMsg', 'Quote text', 'Sent with the quote PDF')}${msg('welcomeCustomer', 'Customer welcome', 'Sent with their invite')}${msg('welcomeCrew', 'Crew welcome', 'Sent with their invite')}`),
     fold('users', 'Users', `${users.length} with access${openInvites.length ? ` · ${openInvites.length} open invite${openInvites.length === 1 ? '' : 's'}` : ''}`, `<div class="b">Invite someone</div>
       <div class="muted small">Makes a link you can text or copy to anyone. They tap it, sign up with any email, and type their name. New customers show up in Customers so you can fill in the rest. Each link works once.</div>
@@ -915,6 +943,29 @@ function renderSheet() {
       ${sh.phone ? `<a class="btn btn-primary" href="${smsHref(sh.phone, sh.body)}" data-a="closeSheet">Open in Messages</a>` : ''}
       <button class="btn ${sh.phone ? 'btn-ghost' : 'btn-primary'}" data-a="shareText">Share / copy</button>
       ${sh.link ? '<button class="btn btn-ghost" data-a="copyLink">Copy just the link</button>' : ''}<button class="btn btn-ghost" data-a="closeSheet">Done</button>`;
+  } else if (sh.kind === 'pickMsg') {
+    const c = cust(sh.cid), many = !sh.cid;
+    inner = `<div class="b" style="font-size:20px">${many ? 'Text customers' : 'Text ' + esc(first(c?.name))}</div><div class="muted small">Pick a message. You can change your saved messages in Settings › Messages.</div>
+      ${customMsgs().map((m) => `<button class="rowbtn" data-a="${many ? 'bulkList' : 'composeMsg'}" data-id="${esc(m.id)}"><div class="grow"><div class="b">${esc(m.title || 'Untitled')}</div><div class="muted small" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(m.body)}</div></div></button>`).join('') || '<div class="muted">No saved messages yet.</div>'}
+      ${many ? '' : '<button class="btn btn-ghost" data-a="composeMsg" data-id="">Blank message</button>'}
+      <button class="btn btn-ghost" data-a="closeSheet">Cancel</button>`;
+  } else if (sh.kind === 'compose') {
+    const c = cust(sh.cid);
+    inner = `<div class="b" style="font-size:20px">Text ${esc(c?.name || '')}</div><div class="muted small">Change anything you like, then open Messages and tap send.</div>
+      <label class="f"><span class="sr">Message</span><textarea class="inp" id="cm_body" rows="9">${esc(sh.body)}</textarea></label>
+      <button class="btn btn-primary" data-a="sendCompose">Open in Messages</button><button class="btn btn-ghost" data-a="closeSheet">Cancel</button>`;
+  } else if (sh.kind === 'bulk') {
+    const m = customMsgs().find((x) => x.id === sh.msgId) || { title: '', body: '' };
+    const inv = needsInvite(m.body);
+    const all = state.customers.filter((c) => c.active !== false).sort(byName);
+    const rows = all.filter((c) => !(sh.skipMembers && userForCustomer(c.id)));
+    const sent = rows.filter((c) => sh.sent[c.id]).length;
+    inner = `<div class="b" style="font-size:20px">${esc(m.title || 'Text customers')}</div>
+      <div class="muted small">Tap Text for each one. Messages opens with it filled in${inv ? ' (with their own sign-up link)' : ''}. Tap send and come back. ${sent} of ${rows.length} sent.</div>
+      <label class="check"><input type="checkbox" data-change="bulkSkip" ${sh.skipMembers ? 'checked' : ''}> Only customers without an app account</label>
+      ${rows.map((c) => `<div class="between" style="border-top:1px solid #ECEDEC;padding-top:10px"><div class="grow"><div class="b">${esc(c.name)}</div>${sh.sent[c.id] ? '<div class="muted small">✓ Sent</div>' : userForCustomer(c.id) ? '<div class="muted small">Has an account</div>' : ''}</div>
+        ${c.phone ? `<a class="btn ${sh.sent[c.id] ? 'btn-ghost' : 'btn-primary'} btn-sm" href="${smsHref(c.phone, fillMsg(m.body, c, sh.pending))}" data-a="bulkSent" data-cid="${c.id}">${sh.sent[c.id] ? 'Again' : 'Text'}</a>` : '<span class="muted small">No phone</span>'}</div>`).join('') || '<div class="muted">Everyone already has an account.</div>'}
+      <button class="btn btn-ghost" data-a="bulkPick">Pick a different message</button><button class="btn btn-ghost" data-a="closeSheet">Close</button>`;
   } else if (sh.kind === 'setLock') {
     inner = `<div class="b" style="font-size:20px">Passcode lock</div>
       <label class="f"><span class="lbl">New 4-digit passcode</span><input class="inp" id="lk_pin" inputmode="numeric" maxlength="4" type="password"></label>
@@ -956,6 +1007,37 @@ const A = {
   thisWeek() { state.week = weekStart(new Date()); render(); },
   moneyTab(el) { state.moneyTab = el.dataset.v; render(); scrollTo(0, 0); },
   closeSheet() { state.sheet = null; renderSheet(); },
+
+  // Saved messages
+  addCustomMsg() { store.update('settings', 'main', { customMsgs: customMsgs().concat({ id: newId(), title: 'New message', body: 'Hi {first}, ' }) }); state.openFolds.add('msg_custom'); },
+  delCustomMsg(el) {
+    const m = customMsgs().find((x) => x.id === el.dataset.id);
+    if (m && confirm(`Delete “${m.title || 'Untitled'}”?`)) store.update('settings', 'main', { customMsgs: customMsgs().filter((x) => x.id !== m.id) });
+  },
+  pickMsg(el) { state.sheet = { kind: 'pickMsg', cid: el.dataset.cid }; renderSheet(); },
+  composeMsg(el) {
+    const cid = state.sheet.cid, m = customMsgs().find((x) => x.id === el.dataset.id), pending = {};
+    state.sheet = { kind: 'compose', cid, pending, body: m ? fillMsg(m.body, cust(cid), pending) : `Hi ${first(cust(cid)?.name)}, ` };
+    renderSheet();
+  },
+  sendCompose() {
+    const sh = state.sheet, c = cust(sh.cid), body = val('cm_body');
+    if (sh.pending[c.id] && body.includes(sh.pending[c.id])) saveInvite(c.id, sh.pending);
+    state.sheet = null; renderSheet();
+    location.href = smsHref(c.phone, body);
+  },
+  bulkPick() { state.sheet = { kind: 'pickMsg', cid: '' }; renderSheet(); },
+  bulkList(el) {
+    const m = customMsgs().find((x) => x.id === el.dataset.id);
+    state.sheet = { kind: 'bulk', msgId: el.dataset.id, sent: {}, pending: {}, skipMembers: needsInvite(m?.body || '') };
+    renderSheet();
+  },
+  bulkSent(el) {
+    const sh = state.sheet, cid = el.dataset.cid;
+    saveInvite(cid, sh.pending);
+    sh.sent[cid] = true;
+    setTimeout(renderSheet, 300); // after Messages opens
+  },
 
   // Route
   markDone(el) {
@@ -1273,7 +1355,15 @@ function syncDemoCustomers() {
 }
 
 /* ---------- settings: save as you type ---------- */
-let settingTimer;
+let settingTimer, cmsgTimer;
+// Saved messages: read every name/text box on screen so quick edits to two boxes both stick.
+function saveCustomMsgs() {
+  const list = customMsgs().map((m) => {
+    const get = (f) => document.querySelector(`[data-cmsg="${CSS.escape(m.id)}"][data-field="${f}"]`)?.value;
+    return { ...m, title: get('title') ?? m.title, body: get('body') ?? m.body };
+  });
+  store.update('settings', 'main', { customMsgs: list });
+}
 async function saveSetting(el) {
   let v = el.type === 'checkbox' ? el.checked : el.value;
   if (el.dataset.setting === 'skipDay') v = Number(v);
@@ -1296,6 +1386,8 @@ document.addEventListener('input', (ev) => {
   } else if (el.dataset.input === 'sheetPrice') {
     state.sheet.price = el.value;
     document.getElementById('sh_total').textContent = money(num(el.value) + state.sheet.sel.reduce((a, id) => a + num((state.addons.find((x) => x.id === id) || {}).price), 0));
+  } else if (el.dataset.cmsg) {
+    clearTimeout(cmsgTimer); cmsgTimer = setTimeout(saveCustomMsgs, 600);
   } else if (el.dataset.setting && el.tagName !== 'SELECT' && el.type !== 'checkbox') {
     clearTimeout(settingTimer); settingTimer = setTimeout(() => saveSetting(el), 600);
   }
@@ -1305,6 +1397,7 @@ document.addEventListener('change', async (ev) => {
   if (el.dataset.setting && (el.tagName === 'SELECT' || el.type === 'checkbox' || el.type === 'time')) return saveSetting(el);
   const k = el.dataset.change;
   if (k === 'setDay') store.update('stops', el.dataset.id, { customerId: el.dataset.cid, weekId: state.week, type: 'grass', status: stopOf(el.dataset.id)?.status || 'scheduled', day: el.value === '' ? null : Number(el.value) });
+  if (k === 'bulkSkip') { state.sheet.skipMembers = el.checked; renderSheet(); }
   if (k === 'snowDate') { state.snowDate = el.value || today(); render(); }
   if (k === 'demoAs') { localStorage.setItem('pc_demo_as', el.value); location.reload(); }
   if (k === 'zelleQr' && el.files[0]) {
