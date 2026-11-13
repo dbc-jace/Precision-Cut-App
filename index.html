@@ -13,15 +13,21 @@
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="icon-512.png">
   <link rel="apple-touch-icon" href="icon-512.png">
-  <link rel="stylesheet" href="styles.css?v=2026.11.13.5">
+  <link rel="preconnect" href="https://www.gstatic.com" crossorigin>
+  <link rel="preconnect" href="https://firestore.googleapis.com" crossorigin>
+  <link rel="preconnect" href="https://identitytoolkit.googleapis.com" crossorigin>
+  <link rel="modulepreload" href="https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js" crossorigin>
+  <link rel="modulepreload" href="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js" crossorigin>
+  <link rel="modulepreload" href="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js" crossorigin>
+  <link rel="stylesheet" href="styles.css?v=2026.11.13.6">
 </head>
 <body>
   <div id="banner" class="banner" hidden></div>
   <div id="app"><p class="center muted" style="padding:40px">Loading…</p></div>
   <div id="sheet"></div>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" defer></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js" defer></script>
-  <script type="module" src="app.js?v=2026.11.13.5"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" async></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js" id="qrjs" async></script>
+  <script type="module" src="app.js?v=2026.11.13.6"></script>
 </body>
 </html>

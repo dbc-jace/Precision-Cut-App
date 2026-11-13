@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.13.5';
+import { createStore, newId } from './store.js?v=2026.11.13.6';
 
-const APP_VERSION = '2026.11.13.5'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.13.6'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -131,7 +131,13 @@ async function imgData(path) {
   return imgCache[path];
 }
 // Letterhead-style invoice / quote. Letter size, in points (612 x 792).
+// The PDF tool loads in the background (so it doesn't slow down opening the app); wait for it if needed.
+async function pdfReady() {
+  for (let i = 0; i < 100 && !window.jspdf; i++) await new Promise((r) => setTimeout(r, 100));
+  if (!window.jspdf) throw new Error('PDF tool didn’t load. Check your connection and try again.');
+}
 async function buildPdf(kind, data) {
+  await pdfReady();
   const s = settings();
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ unit: 'pt', format: 'letter' });
@@ -1524,9 +1530,20 @@ document.addEventListener('visibilitychange', () => {
 });
 
 /* ---------- start ---------- */
+// The QR tool also loads in the background: redraw once it arrives so the Venmo QR shows.
+if (!window.qrcode) document.getElementById('qrjs')?.addEventListener('load', () => { if (store && state.user) scheduleRender(); });
+function renderStartFail() {
+  app.innerHTML = `<div class="auth"><div class="card"><img src="logo-full.jpg" alt="Precision Cut logo" class="logo">
+    <p>The app couldn’t connect. Check your signal or Wi-Fi, then try again.</p>
+    <button class="btn btn-primary" onclick="location.reload()">Try again</button></div></div>`;
+}
 (async function start() {
   checkForUpdate({ auto: true });
-  store = await createStore(showError);
+  // On a weak signal, say so instead of sitting on "Loading…" forever.
+  const slow = setTimeout(() => { if (!store) app.innerHTML = '<p class="center muted" style="padding:40px">Still loading… weak signal? <button class="link" onclick="location.reload()">Try again</button></p>'; }, 12000);
+  try { store = await createStore(showError); }
+  catch (e) { console.error(e); clearTimeout(slow); return renderStartFail(); }
+  clearTimeout(slow);
   store.onAuth((u) => {
     unsubs.forEach((x) => typeof x === 'function' && x()); unsubs = [];
     state.user = u; state.account = null; state.access = null; state.need = null;
