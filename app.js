@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=1.1.1';
+import { createStore, newId } from './store.js?v=1.2.0';
 
-const APP_VERSION = '1.1.1';
+const APP_VERSION = '1.2.0';
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -63,7 +63,7 @@ const state = {
   loaded: new Set(),
   customers: [], notes: [], pricing: [], stops: [], visits: [], requests: [], expenses: [], addons: [], quotes: [], users: [], invites: [], settingsDoc: null,
   tab: 'route', routeSeg: 'grass', week: weekStart(new Date()), snowDate: today(),
-  custId: null, editing: false, q: '', moneyTab: 'overview', quoteId: null, quoteSel: [], openFolds: new Set(),
+  custId: null, editing: false, q: '', moneyTab: 'overview', quoteId: null, quoteSel: [], quoteLines: [{ d: '', a: '' }], quoteEdit: false, openFolds: new Set(),
   sheet: null, locked: false, showPaidHistory: false,
 };
 let store;
@@ -127,7 +127,7 @@ async function buildPdf(kind, data) {
   doc.text('DESCRIPTION', 54, y); doc.text('AMOUNT', 558, y, { align: 'right' });
   y += 8; doc.setDrawColor(220, 226, 218); doc.setLineWidth(1); doc.line(54, y, 558, y);
   doc.setFont('helvetica', 'normal'); doc.setFontSize(12); doc.setTextColor(26, 29, 26);
-  for (const l of data.lines) { y += 22; doc.text(doc.splitTextToSize(l.desc, 380), 54, y); doc.text(money2(l.amount), 558, y, { align: 'right' }); y += 8; doc.line(54, y, 558, y); }
+  for (const l of data.lines) { const dl = doc.splitTextToSize(l.desc, 380); y += 22; doc.text(dl, 54, y); doc.text(money2(l.amount), 558, y, { align: 'right' }); y += 8 + (dl.length - 1) * 15; doc.line(54, y, 558, y); }
   y += 28; doc.setFont('helvetica', 'bold'); doc.setFontSize(15); doc.setTextColor(...forest);
   if (data.totalLabel) { doc.text(data.totalLabel, 54, y); doc.text(money2(data.total), 558, y, { align: 'right' }); }
   y += 30;
@@ -400,7 +400,9 @@ function viewRoute() {
       ${rows.length ? rows.map((r) => stopCard(r, 'snow')).join('') : '<div class="card empty">No snow stops for this day yet.</div>'}`;
   } else {
     const all = [...state.requests].sort((a, b) => (a.status === 'done') - (b.status === 'done') || b.at - a.at).slice(0, 60);
-    body = all.length ? all.map((r) => {
+    const handled = state.requests.filter((r) => r.status === 'done').length;
+    body = (handled ? `<div class="between"><span class="muted small">${handled} handled</span><button class="link danger" style="min-height:32px" data-a="reqClearDone">Delete all handled</button></div>` : '')
+      + (all.length ? all.map((r) => {
       const c = cust(r.customerId);
       return `<div class="card" style="${r.status === 'done' ? 'opacity:.6' : ''}"><div class="between"><div class="b">${esc(c?.name || r.customerName)}</div>${pill(r.type === 'snow' ? 'p-blue' : r.type === 'mow' ? 'p-green' : 'p-orange', { snow: 'Snow request', mow: 'Mow request', message: 'Message' }[r.type])}</div>
         <div class="muted small">${new Date(r.at).toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</div>
@@ -409,8 +411,10 @@ function viewRoute() {
           ${r.type === 'snow' ? `<button class="btn btn-lime btn-sm" data-a="reqToSnow" data-id="${r.id}">Add to snow day</button>` : ''}
           ${r.type === 'mow' ? `<button class="btn btn-lime btn-sm" data-a="reqToWeek" data-id="${r.id}">Add to this week</button>` : ''}
           ${c?.phone ? `<a class="btn btn-ghost btn-sm" href="${smsHref(c.phone, '')}">Text back</a>` : ''}
-          <button class="btn btn-ghost btn-sm" data-a="reqDone" data-id="${r.id}">Mark handled</button></div>` : '<div class="muted small">Handled</div>'}</div>`;
-    }).join('') : '<div class="card empty">No requests yet. Customers can request snow removal or a mow, or send you a message, from their account.</div>';
+          <button class="btn btn-ghost btn-sm" data-a="reqDone" data-id="${r.id}">Mark handled</button>
+          <button class="link danger" style="min-height:32px;margin-left:auto" data-a="reqDel" data-id="${r.id}">Delete</button></div>`
+          : `<div class="between"><span class="muted small">Handled</span><button class="link danger" style="min-height:32px" data-a="reqDel" data-id="${r.id}">Delete</button></div>`}</div>`;
+    }).join('') : '<div class="card empty">No requests yet. Customers can request snow removal or a mow, or send you a message, from their account.</div>');
   }
   return `<div class="seg">${seg('grass', 'Grass')}${seg('snow', 'Snow')}${seg('inbox', `Requests${openReq.length ? ' (' + openReq.length + ')' : ''}`)}</div>${body}`;
 }
@@ -532,8 +536,54 @@ function viewMoney() {
 }
 
 /* ----- Quotes ----- */
+// New-quote form, or editing an existing quote (q). Custom items take any description and price.
+function quoteForm(q) {
+  const v = (k, d = '') => esc(q ? (q[k] ?? d) : d);
+  const n = (x) => (x ? String(x) : '');
+  const opt = (val, label, cur) => `<option value="${val}" ${cur === val ? 'selected' : ''}>${label}</option>`;
+  return `<div class="card"><div class="b" style="font-size:17px">${q ? 'Edit quote' : 'New quote'}</div>
+      <label class="f"><span class="lbl">Name</span><input class="inp" id="q_name" value="${v('name')}"></label>
+      <label class="f"><span class="lbl">Address</span><input class="inp" id="q_address" value="${v('address')}"></label>
+      <label class="f"><span class="lbl">Phone</span><input class="inp" id="q_phone" inputmode="tel" value="${v('phone')}"></label>
+      <div class="grid2"><label class="f"><span class="lbl">Mowing per cut ($)</span><input class="inp" id="q_grass" inputmode="decimal" placeholder="Leave blank if none" value="${esc(n(q?.grassPrice))}"></label>
+        <label class="f"><span class="lbl">How often</span><select class="inp" id="q_freq">${['Weekly', 'Every 2 weeks', 'On call', 'One time'].map((f) => opt(f, f, q?.freq || 'Weekly')).join('')}</select></label></div>
+      <div class="grid2"><label class="f"><span class="lbl">Snow ($)</span><input class="inp" id="q_snow" inputmode="decimal" placeholder="Leave blank if none" value="${esc(n(q?.snowPrice))}"></label>
+        <label class="f"><span class="lbl">Snow plan</span><select class="inp" id="q_snowPlan">${opt('perSnow', 'Per visit', q?.snowPlan || 'perSnow')}${opt('seasonal', 'Season', q?.snowPlan)}</select></label></div>
+      <div class="lbl">Add-ons</div>
+      ${state.addons.length ? `<div class="flex wrap">${[...state.addons].sort(byName).map((a) => `<button class="chip ${state.quoteSel.includes(a.id) ? 'on' : ''}" data-a="quoteAddon" data-id="${a.id}">${esc(a.name)} · ${money(a.price)}</button>`).join('')}</div>` : '<div class="muted">No add-ons yet. Create them in Settings.</div>'}
+      <div class="lbl">Custom items</div>
+      <div class="muted small">Anything else, like tree trimming. Type what it is and the price.</div>
+      ${state.quoteLines.map((l, i) => `<div class="flex" style="align-items:flex-start;gap:8px">
+        <textarea class="inp grow" id="q_ld${i}" rows="2" placeholder="What it is (e.g. Trim 3 trees in back yard)">${esc(l.d)}</textarea>
+        <input class="inp" id="q_la${i}" inputmode="decimal" placeholder="$" style="width:90px" value="${esc(l.a)}">
+        <button class="link danger" style="min-height:44px" data-a="quoteLineDel" data-i="${i}" aria-label="Remove item">✕</button></div>`).join('')}
+      <button class="btn btn-ghost btn-sm" data-a="quoteLineAdd">+ Add custom item</button>
+      <label class="f"><span class="lbl">Notes on the quote</span><textarea class="inp" id="q_notes">${v('notes')}</textarea></label>
+      <button class="btn btn-primary" data-a="${q ? 'saveQuote' : 'createQuote'}" ${q ? `data-id="${q.id}"` : ''}>${q ? 'Save changes' : 'Create quote'}</button></div>`;
+}
+// Keep what's typed in the quote form when the screen redraws.
+const QUOTE_FIELDS = ['q_name', 'q_address', 'q_phone', 'q_grass', 'q_freq', 'q_snow', 'q_snowPlan', 'q_notes'];
+function grabQuoteLines() { state.quoteLines = state.quoteLines.map((_, i) => ({ d: val('q_ld' + i), a: val('q_la' + i) })); }
+function redrawQuoteForm(change) {
+  const keep = QUOTE_FIELDS.map((id) => [id, val(id)]);
+  grabQuoteLines(); change(); render();
+  keep.forEach(([id, v]) => { const el = document.getElementById(id); if (el) el.value = v; });
+}
+// Add-ons picked + custom items, as quote lines.
+function quoteExtras() {
+  grabQuoteLines();
+  const picked = state.quoteSel.map((id) => state.addons.find((a) => a.id === id)).filter(Boolean).map((a) => ({ name: a.name, price: num(a.price) }));
+  const custom = state.quoteLines.filter((l) => l.d.trim() || num(l.a)).map((l) => ({ name: l.d.trim() || 'Custom work', price: num(l.a), custom: true }));
+  return picked.concat(custom);
+}
+function quoteData() {
+  return { name: val('q_name').trim(), address: val('q_address'), phone: val('q_phone'), grassPrice: num(val('q_grass')), freq: val('q_freq'),
+    snowPrice: num(val('q_snow')), snowPlan: val('q_snowPlan'), addons: quoteExtras(), notes: val('q_notes') };
+}
+const resetQuoteForm = () => { state.quoteSel = []; state.quoteLines = [{ d: '', a: '' }]; state.quoteEdit = false; };
 function viewQuotes() {
   const q = state.quoteId && state.quotes.find((x) => x.id === state.quoteId);
+  if (q && state.quoteEdit) return `<button class="link" data-a="cancelQuoteEdit">← Back to quote</button>${quoteForm(q)}`;
   if (q) {
     const total = (q.grassPrice || 0) + (q.snowPrice || 0) + (q.addons || []).reduce((a, x) => a + x.price, 0);
     return `<button class="link" data-a="quoteBack">← All quotes</button>
@@ -545,22 +595,12 @@ function viewQuotes() {
           ${(q.addons || []).map((a) => `<div class="line"><span>${esc(a.name)}</span><span>${money(a.price)}</span></div>`).join('')}
           ${q.grassPrice && q.snowPrice ? '' : `<div class="line b"><span>Total</span><span>${money(total)}</span></div>`}</div>
         ${q.notes ? `<div style="white-space:pre-line">${esc(q.notes)}</div>` : ''}
+        <button class="btn btn-ghost" data-a="editQuote" data-id="${q.id}">Edit quote</button>
         <button class="btn btn-primary" data-a="sendQuote" data-id="${q.id}">${q.status === 'Sent' ? 'Send again' : 'Send quote (PDF)'}</button>
         ${q.status !== 'Accepted' ? `<button class="btn btn-ghost" data-a="quoteToCustomer" data-id="${q.id}">They said yes: make them a customer</button>` : ''}
         <button class="link danger" data-a="delQuote" data-id="${q.id}">Delete quote</button></div>`;
   }
-  return `<div class="card"><div class="b" style="font-size:17px">New quote</div>
-      <label class="f"><span class="lbl">Name</span><input class="inp" id="q_name"></label>
-      <label class="f"><span class="lbl">Address</span><input class="inp" id="q_address"></label>
-      <label class="f"><span class="lbl">Phone</span><input class="inp" id="q_phone" inputmode="tel"></label>
-      <div class="grid2"><label class="f"><span class="lbl">Mowing per cut ($)</span><input class="inp" id="q_grass" inputmode="decimal" placeholder="Leave blank if none"></label>
-        <label class="f"><span class="lbl">How often</span><select class="inp" id="q_freq"><option>Weekly</option><option>Every 2 weeks</option><option>On call</option><option>One time</option></select></label></div>
-      <div class="grid2"><label class="f"><span class="lbl">Snow ($)</span><input class="inp" id="q_snow" inputmode="decimal" placeholder="Leave blank if none"></label>
-        <label class="f"><span class="lbl">Snow plan</span><select class="inp" id="q_snowPlan"><option value="perSnow">Per visit</option><option value="seasonal">Season</option></select></label></div>
-      <div class="lbl">Add-ons</div>
-      ${state.addons.length ? `<div class="flex wrap">${[...state.addons].sort(byName).map((a) => `<button class="chip ${state.quoteSel.includes(a.id) ? 'on' : ''}" data-a="quoteAddon" data-id="${a.id}">${esc(a.name)} · ${money(a.price)}</button>`).join('')}</div>` : '<div class="muted">No add-ons yet. Create them in Settings.</div>'}
-      <label class="f"><span class="lbl">Notes on the quote</span><textarea class="inp" id="q_notes"></textarea></label>
-      <button class="btn btn-primary" data-a="createQuote">Create quote</button></div>
+  return `${quoteForm()}
     <div class="sec">Recent quotes</div>
     ${state.quotes.length ? [...state.quotes].sort((a, b) => b.createdAt - a.createdAt).map((q) => `<button class="rowbtn" data-a="openQuote" data-id="${q.id}"><div class="grow"><div class="b">${esc(q.name)}</div><div class="muted">${shortDate(q.date)}</div></div>${pill(q.status === 'Sent' ? 'p-green' : q.status === 'Accepted' ? 'p-blue' : 'p-orange', q.status)}</button>`).join('') : '<div class="card empty">No quotes yet.</div>'}`;
 }
@@ -811,7 +851,7 @@ function sendInvite(i) {
 
 /* ---------- actions ---------- */
 const A = {
-  tab(el) { state.tab = el.dataset.v; state.custId = null; state.editing = false; state.quoteId = null; state.sheet = null; render(); scrollTo(0, 0); },
+  tab(el) { state.tab = el.dataset.v; state.custId = null; state.editing = false; state.quoteId = null; state.quoteEdit = false; state.sheet = null; render(); scrollTo(0, 0); },
   routeSeg(el) { state.routeSeg = el.dataset.v; render(); },
   week(el) { state.week = shiftWeek(state.week, Number(el.dataset.n)); render(); },
   thisWeek() { state.week = weekStart(new Date()); render(); },
@@ -881,6 +921,12 @@ const A = {
   reqToWeek(el) { const r = state.requests.find((x) => x.id === el.dataset.id); const wk = weekStart(new Date());
     store.set('stops', `${wk}_${r.customerId}`, { customerId: r.customerId, weekId: wk, type: 'grass', status: 'scheduled' });
     store.update('requests', r.id, { status: 'done', handledAt: Date.now() }); toast('Added to this week'); },
+  reqDel(el) { if (!confirm('Delete this for good?')) return; store.remove('requests', el.dataset.id); toast('Deleted'); },
+  reqClearDone() {
+    const done = state.requests.filter((r) => r.status === 'done');
+    if (!confirm(`Delete ${done.length} handled request${done.length === 1 ? '' : 's'} and message${done.length === 1 ? '' : 's'} for good?`)) return;
+    done.forEach((r) => store.remove('requests', r.id)); toast('Deleted');
+  },
   reqDone(el) { store.update('requests', el.dataset.id, { status: 'done', handledAt: Date.now() }); },
 
   // Customers
@@ -963,19 +1009,38 @@ const A = {
 
   // Quotes
   quoteAddon(el) {
-    const keep = ['q_name', 'q_address', 'q_phone', 'q_grass', 'q_freq', 'q_snow', 'q_snowPlan', 'q_notes'].map((id) => [id, val(id)]);
-    const id = el.dataset.id; state.quoteSel = state.quoteSel.includes(id) ? state.quoteSel.filter((x) => x !== id) : state.quoteSel.concat(id);
-    render(); keep.forEach(([id, v]) => { document.getElementById(id).value = v; });
+    const id = el.dataset.id;
+    redrawQuoteForm(() => { state.quoteSel = state.quoteSel.includes(id) ? state.quoteSel.filter((x) => x !== id) : state.quoteSel.concat(id); });
+  },
+  quoteLineAdd() { redrawQuoteForm(() => { state.quoteLines = state.quoteLines.concat({ d: '', a: '' }); }); },
+  quoteLineDel(el) {
+    const i = +el.dataset.i;
+    redrawQuoteForm(() => { state.quoteLines = state.quoteLines.filter((_, k) => k !== i); if (!state.quoteLines.length) state.quoteLines = [{ d: '', a: '' }]; });
   },
   createQuote() {
-    const name = val('q_name').trim(); if (!name) return toast('Name is needed');
-    const addons = state.quoteSel.map((id) => state.addons.find((a) => a.id === id)).filter(Boolean).map((a) => ({ name: a.name, price: num(a.price) }));
-    const id = store.add('quotes', { name, address: val('q_address'), phone: val('q_phone'), grassPrice: num(val('q_grass')), freq: val('q_freq'), snowPrice: num(val('q_snow')), snowPlan: val('q_snowPlan'),
-      addons, notes: val('q_notes'), date: today(), number: String(Date.now()).slice(-5), status: 'Draft', createdAt: Date.now() });
-    state.quoteSel = []; state.quoteId = id; render(); scrollTo(0, 0);
+    const d = quoteData(); if (!d.name) return toast('Name is needed');
+    const id = store.add('quotes', { ...d, date: today(), number: String(Date.now()).slice(-5), status: 'Draft', createdAt: Date.now() });
+    resetQuoteForm(); state.quoteId = id; render(); scrollTo(0, 0);
   },
+  editQuote(el) {
+    const q = state.quotes.find((x) => x.id === el.dataset.id);
+    // Saved add-ons that still match go back to chips; everything else becomes a custom item.
+    const lines = q.addons || []; state.quoteSel = []; state.quoteLines = [];
+    lines.forEach((a) => {
+      const m = !a.custom && state.addons.find((x) => x.name === a.name && num(x.price) === a.price);
+      if (m) state.quoteSel.push(m.id); else state.quoteLines.push({ d: a.name, a: String(a.price || '') });
+    });
+    if (!state.quoteLines.length) state.quoteLines = [{ d: '', a: '' }];
+    state.quoteEdit = true; render(); scrollTo(0, 0);
+  },
+  saveQuote(el) {
+    const d = quoteData(); if (!d.name) return toast('Name is needed');
+    store.update('quotes', el.dataset.id, d);
+    resetQuoteForm(); toast('Quote saved'); render(); scrollTo(0, 0);
+  },
+  cancelQuoteEdit() { resetQuoteForm(); render(); },
   openQuote(el) { state.quoteId = el.dataset.id; render(); scrollTo(0, 0); },
-  quoteBack() { state.quoteId = null; render(); },
+  quoteBack() { state.quoteId = null; resetQuoteForm(); render(); },
   async sendQuote(el) {
     const q = state.quotes.find((x) => x.id === el.dataset.id), s = settings();
     await run(async () => { if (await sharePdf(await quoteFile(q), fill(s.quoteMsg, { first: first(q.name), phone: s.businessPhone }), q.phone)) store.update('quotes', q.id, { status: 'Sent' }); });
