@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.13.8';
+import { createStore, newId } from './store.js?v=2026.11.13.9';
 
-const APP_VERSION = '2026.11.13.8'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.13.9'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -597,9 +597,9 @@ function viewCustomerEdit() {
       <label class="f"><span class="lbl">Notes (crew can see, customer can't)</span><textarea class="inp" id="c_notes" placeholder="Gate code, dogs, problem spots…">${esc(noteOf(c.id))}</textarea></label>
       <label class="check"><input type="checkbox" id="c_active" ${c.active ? 'checked' : ''}> Active customer</label></div>
     <div class="card"><label class="check"><input type="checkbox" id="c_grass" ${c.grass ? 'checked' : ''}> <b>Grass</b></label>
-      <div class="grid2"><label class="f"><span class="lbl">Plan</span><select class="inp" id="c_grassPlan">${opt('weekly', c.grassPlan, 'Weekly')}${opt('biweekly', c.grassPlan, 'Every 2 weeks')}${opt('oncall', c.grassPlan, 'On call')}</select></label>
+      <div class="grid2"><label class="f"><span class="lbl">Plan</span><select class="inp" id="c_grassPlan" data-change="grassPlan">${opt('weekly', c.grassPlan, 'Weekly')}${opt('biweekly', c.grassPlan, 'Every 2 weeks')}${opt('oncall', c.grassPlan, 'On call')}</select></label>
         <label class="f"><span class="lbl">Price per cut ($)</span><input class="inp" id="c_pGrass" inputmode="decimal" value="${esc(p.grass ?? '')}"></label></div>
-      <label class="f"><span class="lbl">Every-2-weeks: first week</span><input class="inp" type="date" id="c_biStart" value="${esc(c.biweeklyStart || state.week)}"></label></div>
+      <label class="f" id="c_biWrap" ${c.grassPlan === 'biweekly' ? '' : 'hidden'}><span class="lbl">Every-2-weeks: first week</span><input class="inp" type="date" id="c_biStart" value="${esc(c.biweeklyStart || state.week)}"></label></div>
     <div class="card"><label class="check"><input type="checkbox" id="c_snow" ${c.snow ? 'checked' : ''}> <b>Snow</b></label>
       <label class="f"><span class="lbl">Plan</span><select class="inp" id="c_snowPlan">${opt('perSnow', c.snowPlan, 'Per snow (on request)')}${opt('seasonal', c.snowPlan, 'Seasonal (billed up front)')}</select></label>
       <div class="grid2"><label class="f"><span class="lbl">Per visit ($)</span><input class="inp" id="c_pSnow" inputmode="decimal" value="${esc(p.snow ?? '')}"></label>
@@ -1439,6 +1439,7 @@ document.addEventListener('change', async (ev) => {
   const k = el.dataset.change;
   if (k === 'setDay') store.update('stops', el.dataset.id, { customerId: el.dataset.cid, weekId: state.week, type: 'grass', status: stopOf(el.dataset.id)?.status || 'scheduled', day: el.value === '' ? null : Number(el.value) });
   if (k === 'composeTo') { const sh = state.sheet; sh.label = document.getElementById('cm_label')?.value || sh.label; sh.cid = el.value; sh.body = fillMsg(sh.tpl, cust(sh.cid), sh.pending); renderSheet(); }
+  if (k === 'grassPlan') { const w = document.getElementById('c_biWrap'); if (w) w.hidden = el.value !== 'biweekly'; }
   if (k === 'bulkSkip') { state.sheet.skipMembers = el.checked; renderSheet(); }
   if (k === 'snowDate') { state.snowDate = el.value || today(); render(); }
   if (k === 'demoAs') { localStorage.setItem('pc_demo_as', el.value); location.reload(); }

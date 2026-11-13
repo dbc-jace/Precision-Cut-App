@@ -83,6 +83,7 @@ nav.tabs .inner { display: flex; width: 100%; max-width: 600px; }
 .rowbtn { background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; display: flex; align-items: center; gap: 12px; text-align: left; cursor: pointer; width: 100%; }
 .avatar { width: 40px; height: 40px; border-radius: 50%; background: #E3F0D2; color: var(--pine); display: flex; align-items: center; justify-content: center; font-weight: 800; flex: none; }
 label.f { display: flex; flex-direction: column; gap: 4px; }
+label.f[hidden] { display: none; }
 .inp { width: 100%; min-height: 44px; border: 1px solid var(--silver); border-radius: 10px; padding: 0 12px; font-size: 16px; background: #fff; }
 textarea.inp { padding: 10px 12px; min-height: 84px; resize: vertical; }
 .check { display: flex; align-items: center; gap: 10px; min-height: 44px; }
