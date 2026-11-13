@@ -1,4 +1,4 @@
-import { createStore, newId } from './store.js?v=1.3.0';
+import { createStore, newId } from './store.js?v=1.3.1';
 
 const APP_VERSION = '1.3.0';
 const app = document.getElementById('app');
