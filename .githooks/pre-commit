@@ -1,0 +1,7 @@
+#!/bin/sh
+# If app code changed but the version didn't, bump it so phones update.
+staged=$(git diff --cached --name-only)
+echo "$staged" | grep -qE '^(app\.js|store\.js|styles\.css|index\.html|firebase-config\.js)$' || exit 0
+echo "$staged" | grep -qx 'version.json' && exit 0
+./bump-version.sh
+git add version.json app.js index.html

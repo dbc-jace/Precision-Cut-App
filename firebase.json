@@ -1,7 +1,7 @@
 {
   "hosting": {
     "public": ".",
-    "ignore": ["firebase.json", "firestore.rules", "README.md", "HANDOFF.md", ".firebaserc", "**/.*", "Old Mac version/**"],
+    "ignore": ["firebase.json", "firestore.rules", "README.md", "HANDOFF.md", "CLAUDE.md", "bump-version.sh", ".firebaserc", "**/.*", "Old Mac version/**"],
     "headers": [{ "source": "**/*.@(js|css|html|json)", "headers": [{ "key": "Cache-Control", "value": "no-cache" }] }]
   },
   "firestore": { "rules": "firestore.rules" }

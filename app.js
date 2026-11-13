@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=1.3.1';
+import { createStore, newId } from './store.js?v=1.3.2';
 
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.3.2'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -95,7 +95,7 @@ const userForCustomer = (cid) => state.users.find((u) => u.customerId === cid &&
 let toastTimer;
 function toast(msg) { toastEl.textContent = msg; toastEl.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => toastEl.classList.remove('show'), 3200); }
 function showError(e) {
-  bannerEl.textContent = String(e?.code || '').includes('permission') ? 'Not allowed: that change was blocked by the database rules.' : 'Could not save to the database. Check your connection.';
+  bannerEl.style.background = ''; bannerEl.textContent = String(e?.code || '').includes('permission') ? 'Not allowed: that change was blocked by the database rules.' : 'Could not save to the database. Check your connection.';
   bannerEl.hidden = false; setTimeout(() => { bannerEl.hidden = true; }, 6000);
 }
 
@@ -751,7 +751,10 @@ function viewSettings() {
       ${lock ? `<div class="flex"><button class="btn btn-ghost grow" data-a="setLock">Change</button><button class="btn btn-danger grow" data-a="clearLock">Turn off</button></div>` : '<button class="btn btn-primary" data-a="setLock">Turn on passcode lock</button>'}`),
     fold('backup', 'Backup', 'Download a full copy', `<div class="muted small">Your data is saved in Firebase automatically. Download a full copy now and then to keep on your phone or computer.</div>
       <button class="btn btn-ghost" data-a="backup">Download backup</button>`),
-    `<div class="muted small center">Version ${APP_VERSION}</div>`,
+    `<div class="card center"><div class="b">App version ${APP_VERSION}</div>
+      <div class="muted small">${upd.checking ? 'Checking…' : !upd.latest ? 'Not checked yet' : upd.latest === APP_VERSION ? '✓ Up to date' : `Update available: version ${esc(upd.latest)}`}</div>
+      ${upd.latest && upd.latest !== APP_VERSION ? '<button class="btn btn-primary" data-a="updateNow">Update now</button>' : '<button class="btn btn-ghost" data-a="checkUpdate">Check for updates</button>'}
+      <div class="muted small">The app updates itself when you open it. This is here just in case.</div></div>`,
   ].join('');
 }
 
@@ -1066,6 +1069,13 @@ const A = {
     const tpl = u.role === 'crew' ? welcomeTpl('welcomeCrew') : welcomeTpl('welcomeCustomer');
     openText('Welcome text', fill(tpl, { first: first(u.name), link: appLink(), email: u.id }), c?.phone);
   },
+  async checkUpdate() { await checkForUpdate(); toast(upd.latest === APP_VERSION ? 'You have the newest version' : upd.latest ? 'Update available' : 'Could not check. Are you online?'); },
+  async updateNow() {
+    try { upd.latest = await fetchLatest(); } catch {}
+    if (upd.latest === APP_VERSION) { bannerEl.hidden = true; toast('You have the newest version'); return render(); }
+    try { sessionStorage.removeItem('pc_upd_try'); } catch {}
+    applyUpdate(upd.latest || APP_VERSION);
+  },
   async testAlert() {
     if (store.mode !== 'shared') return toast('Connect Firebase first');
     const to = settings().alertEmail.trim() || state.user.email;
@@ -1318,8 +1328,42 @@ document.addEventListener('visibilitychange', async () => {
   try { state.user = await store.reloadUser(); if (state.user.verified) checkAccess(); } catch {}
 });
 
+/* ---------- updates ---------- */
+// The site's version.json says which version is live. If this phone is running an older copy,
+// reload onto the new one (a new ?v= address skips anything the phone has saved).
+const upd = { latest: '', checking: false, checkedAt: 0 };
+const busy = () => !!state.sheet || /INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName || '');
+async function fetchLatest() {
+  const r = await fetch('version.json?t=' + Date.now(), { cache: 'no-store' });
+  return String((await r.json()).version || '');
+}
+function applyUpdate(v) {
+  try { sessionStorage.setItem('pc_upd_try', v); } catch {}
+  location.replace(location.pathname + '?v=' + encodeURIComponent(v) + location.hash);
+}
+async function checkForUpdate({ auto = false } = {}) {
+  if (upd.checking) return;
+  upd.checking = true;
+  try {
+    upd.latest = await fetchLatest(); upd.checkedAt = Date.now();
+    if (upd.latest && upd.latest !== APP_VERSION) {
+      let tried = ''; try { tried = sessionStorage.getItem('pc_upd_try') || ''; } catch {}
+      if (auto && !busy() && tried !== upd.latest) return applyUpdate(upd.latest);
+      bannerEl.innerHTML = `A new version of the app is ready. <button class="link" data-a="updateNow" style="color:inherit;text-decoration:underline">Tap to update</button>`;
+      bannerEl.style.background = '#183723'; bannerEl.hidden = false;
+    }
+  } catch (e) { console.warn('Update check failed', e); }
+  finally { upd.checking = false; if (state.tab === 'settings') scheduleRender(); }
+}
+// Clean the ?v= off the address after an update so links and the home screen stay tidy.
+if (/[?&]v=/.test(location.search)) history.replaceState(null, '', location.pathname + location.hash);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && Date.now() - upd.checkedAt > 60000) checkForUpdate({ auto: true });
+});
+
 /* ---------- start ---------- */
 (async function start() {
+  checkForUpdate({ auto: true });
   store = await createStore(showError);
   store.onAuth((u) => {
     unsubs.forEach((x) => typeof x === 'function' && x()); unsubs = [];
