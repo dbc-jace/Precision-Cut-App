@@ -44,6 +44,7 @@ const deadlineText = (weekId) => skipDeadline(weekId).toLocaleString('en-US', { 
 
 /* ---------- defaults ---------- */
 const DEFAULTS = {
+  alertEmail: 'jace.precisioncutlawns@gmail.com',
   businessName: 'Precision Cut Lawns', businessPhone: '224-334-8532', businessEmail: 'jace.precisioncutlawns@gmail.com', website: '', zelle: '224-334-8532', venmo: '', zelleQr: '',
   skipDay: 3, skipTime: '18:00',
   reminderMsg: 'Hi {first}, it\'s Jace with Precision Cut Lawns. Your lawn is scheduled to be mowed this week ({week}). Need to skip? Tap here by {deadline}: {link}',
@@ -342,7 +343,7 @@ async function sendAlert(to, subject, fields) {
 }
 async function notifyJoined(name, email) {
   try {
-    const owner = (await store.getDoc('meta', 'setup'))?.owner; if (!owner) return;
+    const owner = settings().alertEmail.trim() || (await store.getDoc('meta', 'setup'))?.owner; if (!owner) return;
     const role = state.account?.role || 'customer';
     await sendAlert(owner, `New ${role} sign-up: ${name}`, {
       Name: name, Email: email, Role: role, When: new Date().toLocaleString('en-US'),
@@ -739,7 +740,8 @@ function viewSettings() {
         <div class="muted small">Made ${shortDate(ymd(new Date(i.createdAt)))} · not used yet</div></div>
         <button class="link" style="min-height:32px" data-a="resendInvite" data-id="${i.id}">Send</button>
         <button class="link danger" style="margin-left:10px;min-height:32px" data-a="cancelInvite" data-id="${i.id}">Cancel</button></div>`).join('')}</div>` : ''}
-      <div class="muted small">You get an email each time someone uses an invite link. Tap below once to turn it on: you'll get an "Activate" email from FormSubmit; tap the button in it.</div>
+      <div class="muted small">You get an email each time someone uses an invite link. Tap the test button once to turn it on (and again any time you change the address): FormSubmit sends an "Activate" email to that address; tap the button in it.</div>
+      ${field('alertEmail', 'Send sign-up emails to', state.user.email)}
       <button class="btn btn-ghost" data-a="testAlert">Send a test sign-up email</button>
       <div class="b" style="margin-top:6px">People with access</div>
       <div class="card list" style="padding:0 0 0 0;border:0">${users.map((u) => `<div class="line"><div class="grow"><div class="b">${esc(u.name)}</div><div class="muted small">${esc(u.id)}</div></div>
@@ -1066,7 +1068,8 @@ const A = {
   },
   async testAlert() {
     if (store.mode !== 'shared') return toast('Connect Firebase first');
-    try { await sendAlert(state.user.email, 'Precision Cut: test sign-up email', { Note: 'Sign-up emails are working.' }); toast('Sent to ' + state.user.email + '. Check your email (and spam).'); }
+    const to = settings().alertEmail.trim() || state.user.email;
+    try { await sendAlert(to, 'Precision Cut: test sign-up email', { Note: 'Sign-up emails are working.' }); toast('Sent to ' + to + '. Check that inbox (and spam).'); }
     catch (e) { console.error(e); toast('Could not send the test email'); }
   },
   removeUser(el) { if (!confirm(`Remove app access for ${el.dataset.email}?`)) return; store.remove('users', el.dataset.email); toast('Access removed'); },
