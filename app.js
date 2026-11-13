@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.13.6';
+import { createStore, newId } from './store.js?v=2026.11.13.7';
 
-const APP_VERSION = '2026.11.13.6'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.13.7'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -368,7 +368,9 @@ async function sendAlert(to, subject, fields) {
     method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
     body: JSON.stringify({ _subject: subject, _template: 'table', _captcha: 'false', ...fields }),
   });
-  if (!r.ok) throw new Error('email failed ' + r.status);
+  const body = await r.json().catch(() => ({}));
+  // FormSubmit answers 200 with success "false" (e.g. address not activated yet), so check both.
+  if (!r.ok || String(body.success) === 'false') throw new Error(`Alert email to ${to} failed (${r.status}): ${body.message || 'no details'}`);
 }
 async function notifyJoined(name, email) {
   try {
@@ -378,7 +380,7 @@ async function notifyJoined(name, email) {
       Name: name, Email: email, Role: role, When: new Date().toLocaleString('en-US'),
       'Next step': role === 'customer' ? 'Open the app > Customers > ' + name + ' > Edit to add their phone, address and plans.' : 'They can see the route now.',
     });
-  } catch (e) { console.warn('Sign-up email not sent', e); }
+  } catch (e) { console.error('Sign-up alert email to the owner NOT sent:', e?.message || e); }
 }
 async function seedDemo() {
   await store.claimSetup('admin@demo', 'Jace (demo)');
@@ -887,19 +889,24 @@ function renderSignIn() {
 }
 // Confirmation emails: remember which address this phone last sent one to, so anyone who lands on the
 // "confirm your email" screen without one (e.g. the first send failed) gets one sent automatically.
+// It also re-sends when the last one is more than VERIFY_RESEND_MS old: before, a phone that had "sent" once
+// never sent again, so anyone whose first email went missing stayed stuck with nothing in their inbox.
 const VERIFY_KEY = 'pc_verify_sent';
-const verifySentTo = () => { try { return localStorage.getItem(VERIFY_KEY) || ''; } catch { return ''; } };
-const markVerifySent = (email) => { try { localStorage.setItem(VERIFY_KEY, email); } catch {} };
+const VERIFY_RESEND_MS = 10 * 60 * 1000;
+const verifyLast = () => { try { const [email = '', ts = '0'] = (localStorage.getItem(VERIFY_KEY) || '').split('|'); return { email, ts: Number(ts) || 0 }; } catch { return { email: '', ts: 0 }; } };
+const verifySentTo = () => verifyLast().email;
+const verifyFresh = (email) => { const l = verifyLast(); return l.email === email && Date.now() - l.ts < VERIFY_RESEND_MS; };
+const markVerifySent = (email) => { try { localStorage.setItem(VERIFY_KEY, email + '|' + Date.now()); } catch {} };
 const verifyErr = (e) => ({ 'auth/too-many-requests': 'Too many emails sent for now. Wait a few minutes, then tap “Send the link again”.',
   'auth/network-request-failed': 'No internet connection. Check your signal and tap “Send the link again”.' })[e?.code]
   || 'We couldn’t send the confirmation email (' + (e?.code || e?.message || 'unknown error') + '). Tap “Send the link again”, or use Sign in with Google instead.';
 async function sendVerifyEmail() {
   try { await store.resendVerification(returnLink()); markVerifySent(state.user.email); state.authMsg = 'Sent! Check your inbox for an email from Precision Cut Lawns.'; }
-  catch (e) { console.error(e); state.authMsg = verifyErr(e); }
+  catch (e) { console.error('Confirmation email NOT sent to', state.user?.email, e?.code, e?.message, e); state.authMsg = verifyErr(e); }
   render();
 }
 function renderVerify() {
-  if (store.mode === 'shared' && verifySentTo() !== state.user.email && !state.verifyAutoTried) { state.verifyAutoTried = true; sendVerifyEmail(); }
+  if (store.mode === 'shared' && !verifyFresh(state.user.email) && !state.verifyAutoTried) { state.verifyAutoTried = true; sendVerifyEmail(); }
   const sent = verifySentTo() === state.user.email;
   app.innerHTML = authCard(`<p>${sent ? 'We sent a link to' : 'We’re sending a confirmation link to'} <b>${esc(state.user.email)}</b>. Tap it in the email, then tap <b>Continue</b> to come back to the app.</p>
     <p class="muted small">Don’t see it? Check your spam or junk folder for an email from <b>noreply@precision-cut-215ed.firebaseapp.com</b>.</p>
@@ -1227,7 +1234,7 @@ const A = {
     if (store.mode !== 'shared') return toast('Connect Firebase first');
     const to = settings().alertEmail.trim() || state.user.email;
     try { await sendAlert(to, 'Precision Cut: test sign-up email', { Note: 'Sign-up emails are working.' }); toast('Sent to ' + to + '. Check that inbox (and spam).'); }
-    catch (e) { console.error(e); toast('Could not send the test email'); }
+    catch (e) { console.error(e); toast('Could not send the test email: ' + e.message); }
   },
   removeUser(el) { if (!confirm(`Remove app access for ${el.dataset.email}?`)) return; store.remove('users', el.dataset.email); toast('Access removed'); },
   billSeason(el) {
