@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.13.11';
+import { createStore, newId } from './store.js?v=2026.11.13.12';
 
-const APP_VERSION = '2026.11.13.11'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.13.12'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -68,7 +68,8 @@ const settings = () => ({ ...DEFAULTS, ...(state.settingsDoc || {}) });
 const state = {
   user: null, access: null, account: null, setupDone: true, authMsg: '', authMode: 'in',
   loaded: new Set(),
-  customers: [], notes: [], pricing: [], stops: [], visits: [], requests: [], expenses: [], addons: [], quotes: [], users: [], invites: [], settingsDoc: null,
+  customers: [], notes: [], pricing: [], stops: [], visits: [], requests: [], expenses: [], addons: [], quotes: [], users: [], invites: [], pending: [], settingsDoc: null,
+  waiting: null,
   tab: 'route', routeSeg: 'grass', week: weekStart(new Date()), snowDate: today(),
   custId: null, editing: false, q: '', moneyTab: 'overview', quoteId: null, quoteSel: [], quoteLines: [{ d: '', a: '' }], quoteEdit: false, openFolds: new Set(),
   sheet: null, locked: false, showPaidHistory: false,
@@ -81,6 +82,17 @@ const JOIN_KEY = 'pc_join';
 // Accepts #join=... (invite texts) and ?join=... (the "Continue" button after confirming an email).
 (() => { const m = (location.hash + '&' + location.search).match(/join=([A-Za-z0-9]+)/); if (m) localStorage.setItem(JOIN_KEY, m[1]); })();
 const joinCode = () => localStorage.getItem(JOIN_KEY) || '';
+// Phones add stray spaces, invisible characters, commas for periods and capital letters. Clean them up first.
+const cleanEmail = (v) => String(v || '').normalize('NFKC').replace(/[\s\u200B-\u200D\u2060\uFEFF]/g, '')
+  .replace(/[,;]/g, '.').replace(/^mailto:/i, '').replace(/\.+$/, '').toLowerCase();
+const validEmail = (e) => /^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$/.test(e) && e.length <= 254 && !/\.\./.test(e);
+function emailProblem(e, typed = e) {
+  const t = String(typed).trim();
+  if (!e) return 'Type your email address first.';
+  if (!e.includes('@')) return `“${t}” is missing the @. It should look like name@gmail.com.`;
+  if (!validEmail(e)) return `“${t}” isn’t a complete email address. It should look like name@gmail.com.`;
+  return '';
+}
 const backFromEmail = /[?&]join=/.test(location.search);
 const inviteLink = (code) => appLink() + '#join=' + code;
 // Older saved welcome texts said "sign in with this email"; invite links don't need one.
@@ -115,6 +127,9 @@ const noteOf = (id) => (state.notes.find((n) => n.id === id) || {}).text || '';
 const stopOf = (id) => state.stops.find((s) => s.id === id);
 const visitOf = (id) => state.visits.find((v) => v.id === id);
 const userForCustomer = (cid) => state.users.find((u) => u.customerId === cid && !u.id.endsWith('@demo'));
+// Everyone who logs in to this customer account (e.g. husband and wife each with their own login).
+const usersForCustomer = (cid) => state.users.filter((u) => u.customerId === cid && !u.id.endsWith('@demo'));
+const bothNames = (c) => c.name2 ? `${c.name} & ${c.name2}` : c.name;
 
 /* ---------- toast & banner ---------- */
 let toastTimer;
@@ -325,7 +340,7 @@ function subscribe() {
   const onData = (key) => (done) => (docs) => { state[key] = docs; done(); scheduleRender(); };
   const W = (name) => watch(name, (done) => store.watch(name, onData(name)(done)));
   watch('settings', (done) => store.watchDoc('settings', 'main', (d) => { state.settingsDoc = d; done(); scheduleRender(); }));
-  if (isAdmin()) ['customers', 'notes', 'pricing', 'stops', 'visits', 'requests', 'expenses', 'addons', 'quotes', 'users', 'invites'].forEach(W);
+  if (isAdmin()) ['customers', 'notes', 'pricing', 'stops', 'visits', 'requests', 'expenses', 'addons', 'quotes', 'users', 'invites', 'pending'].forEach(W);
   else if (role() === 'crew') ['customers', 'notes', 'stops', 'requests'].forEach(W);
   else if (role() === 'customer') {
     const cid = state.account.customerId;
@@ -354,13 +369,39 @@ async function checkAccess() {
     if (!acct && joinCode() && store.mode === 'shared') { state.access = 'join'; return render(); }
     if (!acct) {
       const setup = await store.getDoc('meta', 'setup').catch(() => null);
-      state.setupDone = !!setup; state.access = 'none'; return render();
+      state.setupDone = !!setup; state.access = 'none';
+      if (setup && store.mode === 'shared') {
+        state.waiting = await store.getDoc('pending', state.user.email).catch(() => null);
+        waitForApproval();
+      }
+      return render();
     }
     state.account = acct; state.access = 'ok';
     state.tab = acct.role === 'customer' ? 'home' : 'route';
     if (lockCfg()) state.locked = true;
     subscribe(); render();
   } catch (e) { console.error(e); state.access = 'none'; state.setupDone = true; render(); }
+}
+// Signed in but not let in yet: as soon as Jace approves them (their users/ record appears), open the app.
+let approvalUnsub = null;
+function waitForApproval() {
+  if (approvalUnsub) return;
+  approvalUnsub = store.watchDoc('users', state.user.email, (d) => {
+    if (d && state.access === 'none') { approvalUnsub?.(); approvalUnsub = null; state.waiting = null; checkAccess(); }
+  }, () => {});
+}
+// Ask Jace to let this login in (used when an invite link can't be matched on this phone).
+async function askToJoin(name, invite) {
+  const email = state.user.email;
+  const doc = { name, email, at: Date.now(), ...(invite ? { invite } : {}) };
+  await store.set('pending', email, doc);
+  state.waiting = doc; state.access = 'none'; state.authMsg = '';
+  waitForApproval(); render();
+  try {
+    const owner = settings().alertEmail.trim() || (await store.getDoc('meta', 'setup'))?.owner;
+    if (owner) await sendAlert(owner, `Waiting to join: ${name}`, { Name: name, Email: email, When: new Date().toLocaleString('en-US'),
+      'Next step': 'Open the app > Route > Requests and tap Approve.' });
+  } catch (e) { console.error('Waiting-to-join alert email NOT sent:', e?.message || e); }
 }
 // Emails Jace when someone uses an invite link, so he knows to set up their account.
 // Goes to the admin email the app was set up with, through FormSubmit (free, no server; no-reply sender).
@@ -424,7 +465,7 @@ function demoBar() {
 function renderStaff() {
   const tabs = isAdmin() ? ['route', 'customers', 'money', 'quotes', 'settings'] : ['route', 'customers'];
   if (!tabs.includes(state.tab)) state.tab = 'route';
-  const openReq = state.requests.filter((r) => r.status !== 'done').length;
+  const openReq = state.requests.filter((r) => r.status !== 'done').length + (isAdmin() ? state.pending.length : 0);
   const saysPaid = state.visits.filter((v) => !v.paid && v.customerSaysPaid).length;
   const view = { route: viewRoute, customers: viewCustomers, money: viewMoney, quotes: viewQuotes, settings: viewSettings }[state.tab]();
   const titles = { route: ['Route', state.routeSeg === 'snow' ? 'Snow removal' : state.routeSeg === 'inbox' ? 'Requests from customers' : 'Week of ' + weekLabel(state.week)],
@@ -557,7 +598,17 @@ function viewRoute() {
   } else {
     const all = [...state.requests].sort((a, b) => (a.status === 'done') - (b.status === 'done') || lastAt(b) - lastAt(a)).slice(0, 60);
     const handled = state.requests.filter((r) => r.status === 'done').length;
-    body = (handled ? `<div class="between"><span class="muted small">${handled} handled</span><button class="link danger" style="min-height:32px" data-a="reqClearDone">Delete all handled</button></div>` : '')
+    const waiting = isAdmin() ? [...state.pending].sort((a, b) => (b.at || 0) - (a.at || 0)) : [];
+    const custOpts = [...state.customers].sort(byName).map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
+    body = waiting.map((p) => {
+      const inv = p.invite && state.invites.find((i) => i.id === p.invite);
+      const match = inv?.customerId || state.customers.find((c) => (c.email || '').toLowerCase() === p.id)?.id || '';
+      return `<div class="card"><div class="between"><div class="b">${esc(p.name)}</div>${pill('p-orange', 'Waiting to join')}</div>
+        <div class="muted small">${esc(p.id)} · ${p.at ? shortDate(new Date(p.at).toISOString().slice(0, 10)) : ''}${inv?.label ? ' · link sent to ' + esc(inv.label) : ''}</div>
+        <label class="f"><span class="lbl">Let them in as</span><select class="inp" id="pend_${esc(p.id)}"><option value="new">A new customer</option>${custOpts.replace(`value="${match}"`, `value="${match}" selected`)}</select></label>
+        <div class="flex wrap"><button class="btn btn-primary btn-sm" data-a="approvePending" data-id="${esc(p.id)}">Approve</button>
+          <button class="link danger" style="min-height:32px;margin-left:auto" data-a="dismissPending" data-id="${esc(p.id)}">Remove</button></div></div>`;
+    }).join('') + (handled ? `<div class="between"><span class="muted small">${handled} handled</span><button class="link danger" style="min-height:32px" data-a="reqClearDone">Delete all handled</button></div>` : '')
       + (all.length ? all.map((r) => {
       const c = cust(r.customerId);
       return `<div class="card" style="${r.status === 'done' ? 'opacity:.6' : ''}"><div class="between"><div class="b">${esc(c?.name || r.customerName)}</div>${pill(r.type === 'snow' ? 'p-blue' : r.type === 'mow' ? 'p-green' : 'p-orange', r.fromAdmin ? 'You sent' : REQ_LABEL[r.type])}</div>
@@ -570,9 +621,9 @@ function viewRoute() {
           <button class="btn btn-ghost btn-sm" data-a="reqDone" data-id="${r.id}">Mark handled</button>
           <button class="link danger" style="min-height:32px;margin-left:auto" data-a="reqDel" data-id="${r.id}">Delete</button></div>`
           : `<div class="between"><span class="muted small">Handled</span><button class="link danger" style="min-height:32px" data-a="reqDel" data-id="${r.id}">Delete</button></div>`}</div>`;
-    }).join('') : '<div class="card empty">No requests yet. Customers can request snow removal or a mow, or send you a message, from their account.</div>');
+    }).join('') : waiting.length ? '' : '<div class="card empty">No requests yet. Customers can request snow removal or a mow, or send you a message, from their account.</div>');
   }
-  return `<div class="seg">${seg('grass', 'Grass')}${seg('snow', 'Snow')}${seg('inbox', `Requests${openReq.length ? ' (' + openReq.length + ')' : ''}`)}</div>${body}`;
+  return `<div class="seg">${seg('grass', 'Grass')}${seg('snow', 'Snow')}${seg('inbox', `Requests${openReq.length + (isAdmin() ? state.pending.length : 0) ? ' (' + (openReq.length + (isAdmin() ? state.pending.length : 0)) + ')' : ''}`)}</div>${body}`;
 }
 
 /* ----- Customers ----- */
@@ -580,13 +631,13 @@ function viewCustomers() {
   if (state.editing) return viewCustomerEdit();
   if (state.custId && cust(state.custId)) return viewCustomer();
   const q = state.q.trim().toLowerCase();
-  const list = [...state.customers].sort(byName).filter((c) => !q || `${c.name} ${c.address} ${c.phone}`.toLowerCase().includes(q));
+  const list = [...state.customers].sort(byName).filter((c) => !q || `${c.name} ${c.name2 || ''} ${c.address} ${c.phone}`.toLowerCase().includes(q));
   const svc = (c) => [c.grass && 'Grass', c.snow && 'Snow'].filter(Boolean).join(' + ') || 'No services';
   return `<div class="flex"><label class="grow"><span class="sr">Search customers</span><input class="inp" id="search" placeholder="Search name, address or phone" value="${esc(state.q)}" data-input="search"></label>
       ${isAdmin() ? '<button class="btn btn-primary" data-a="newCust">+ Add</button>' : ''}</div>
     ${isAdmin() && state.customers.length ? '<button class="btn btn-ghost" data-a="bulkPick">Text customers a saved message</button>' : ''}
     ${list.length ? list.map((c) => `<button class="rowbtn" data-a="openCust" data-id="${c.id}"><div class="avatar">${esc(initials(c.name))}</div>
-      <div class="grow"><div class="b">${esc(c.name)}</div><div class="muted">${esc(c.address || 'No address')}</div></div>
+      <div class="grow"><div class="b">${esc(bothNames(c))}</div><div class="muted">${esc(c.address || 'No address')}</div></div>
       <div style="text-align:right">${isAdmin() && priceOf(c.id).grass ? `<div class="b">${money(priceOf(c.id).grass)}</div>` : ''}<div class="muted small">${c.active ? svc(c) : 'Paused'}</div></div></button>`).join('')
       : `<div class="card empty">${state.customers.length ? 'No matches.' : 'No customers yet. Tap “+ Add” to enter your first one.'}</div>`}`;
 }
@@ -596,7 +647,7 @@ function viewCustomer() {
   const visits = state.visits.filter((v) => v.customerId === c.id).sort((a, b) => (b.date + b.createdAt).localeCompare(a.date + a.createdAt));
   const grassPlan = { weekly: 'Weekly', biweekly: 'Every 2 weeks', oncall: 'On call ("Grass today?" text)' }[c.grassPlan];
   return `<button class="link" data-a="backToList">← All customers</button>
-    <div class="card"><div class="between"><div class="b" style="font-size:20px">${esc(c.name)}</div>${admin ? '<button class="btn btn-ghost btn-sm" data-a="editCust">Edit</button>' : ''}</div>
+    <div class="card"><div class="between"><div><div class="b" style="font-size:20px">${esc(c.name)}</div>${c.name2 ? `<div class="muted">and ${esc(c.name2)}</div>` : ''}</div>${admin ? '<button class="btn btn-ghost btn-sm" data-a="editCust">Edit</button>' : ''}</div>
       <div><div class="lbl">Phone</div><div>${c.phone ? `<a href="tel:+1${firstPhone(c.phone)}">${esc(c.phone)}</a> · <a href="${smsHref(c.phone, '')}">Text</a>` : '—'}</div></div>
       ${admin && c.phone ? `<button class="btn btn-ghost" data-a="pickMsg" data-cid="${c.id}">Send a saved message</button>` : ''}
       ${admin && userForCustomer(c.id) ? `<button class="btn btn-ghost" data-a="openReply" data-cid="${c.id}">Message in the app</button>` : ''}
@@ -613,14 +664,20 @@ function viewCustomer() {
       ${admin ? `<button class="btn btn-ghost" data-a="otherWork" data-cid="${c.id}">Bill other work</button>` : ''}
     </div>
     ${admin ? `<div class="sec">App access</div>
-    <div class="card">${u ? `<div class="between"><div><div class="b">Invited</div><div class="muted">${esc(u.id)}</div></div>${pill('p-green', 'Has access')}</div>
-        <button class="btn btn-ghost" data-a="reinvite" data-email="${esc(u.id)}">Send the welcome text again</button>
-        <button class="link danger" data-a="removeUser" data-email="${esc(u.id)}">Remove app access</button>`
+    <div class="card">${u ? `${usersForCustomer(c.id).map((x, i) => `<div class="between" ${i ? 'style="border-top:1px solid #ECEDEC;padding-top:10px"' : ''}><div><div class="b">${esc(x.name || c.name)}</div><div class="muted">${esc(x.id)}</div></div>${pill('p-green', 'Has access')}</div>
+        <div class="flex wrap"><button class="btn btn-ghost btn-sm" data-a="reinvite" data-email="${esc(x.id)}">Send the welcome text again</button>
+          <button class="link danger" style="min-height:32px;margin-left:auto" data-a="removeUser" data-email="${esc(x.id)}">Remove app access</button></div>`).join('')}
+        <button class="btn btn-ghost" data-a="inviteSecond" data-cid="${c.id}">Invite ${c.name2 ? esc(first(c.name2)) : 'a second person'} to this account</button>
+        <div class="muted small">They get their own login and see the same schedule and invoices.</div>`
       : `<div class="muted">Give ${esc(first(c.name))} a login to see their schedule, skip, request snow removal and pay invoices.</div>
         <button class="btn btn-primary" data-a="inviteCustomer" data-cid="${c.id}">Invite to the app</button><div class="muted small">Sends a link. They sign up with any email.</div>`}</div>
     <div class="sec">Invoices</div>
     <div class="card list">${visits.length ? visits.map((v) => `<div class="line"><div class="grow"><div>${shortDate(v.date)} · ${esc(v.desc || 'Lawn mowing')}</div><div class="muted small">${esc(v.invoiceNo)}</div></div>
-        <span class="flex"><b>${money(v.total)}</b>${v.paid ? pill('p-green', 'Paid') : `<button class="btn btn-ghost btn-sm" data-a="sendInvoice" data-id="${v.id}">Send</button>`}</span></div>`).join('') : '<div class="empty">No invoices yet.</div>'}</div>` : ''}`;
+        <span class="flex"><b>${money(v.total)}</b>${v.paid ? pill('p-green', 'Paid') : `<button class="btn btn-ghost btn-sm" data-a="sendInvoice" data-id="${v.id}">Send</button>`}</span></div>`).join('') : '<div class="empty">No invoices yet.</div>'}</div>
+    ${state.customers.length > 1 ? `<div class="sec">Duplicate?</div>
+    <div class="card"><div class="muted small">If this person is in here twice, pick the other one. Their logins, invoices, route stops and messages move to ${esc(first(c.name))}, then the other one is deleted.</div>
+      <label class="f"><span class="lbl">Merge into ${esc(c.name)}</span><select class="inp" id="merge_pick"><option value="">Pick the duplicate…</option>${[...state.customers].filter((x) => x.id !== c.id).sort(byName).map((x) => `<option value="${x.id}">${esc(bothNames(x))}${x.email ? ' · ' + esc(x.email) : ''}</option>`).join('')}</select></label>
+      <button class="btn btn-ghost" data-a="mergeCust">Merge</button></div>` : ''}` : ''}`;
 }
 function viewCustomerEdit() {
   const c = cust(state.custId) || { name: '', phone: '', address: '', email: '', deck: '', active: true, grass: true, grassPlan: 'weekly', snow: false, snowPlan: 'perSnow' };
@@ -629,6 +686,7 @@ function viewCustomerEdit() {
   return `<button class="link" data-a="cancelEdit">← Cancel</button>
     <div class="card">
       <label class="f"><span class="lbl">Name</span><input class="inp" id="c_name" value="${esc(c.name)}" autocomplete="off"></label>
+      <label class="f"><span class="lbl">Second person (optional)</span><input class="inp" id="c_name2" value="${esc(c.name2 || '')}" autocomplete="off" placeholder="Spouse, son, daughter…"></label>
       <label class="f"><span class="lbl">Phone number(s)</span><input class="inp" id="c_phone" value="${esc(c.phone)}" inputmode="tel" placeholder="First number gets the texts"></label>
       <label class="f"><span class="lbl">Address</span><input class="inp" id="c_address" value="${esc(c.address)}"></label>
       <label class="f"><span class="lbl">Email (for their app login)</span><input class="inp" id="c_email" type="email" value="${esc(c.email)}" autocapitalize="off"></label>
@@ -883,7 +941,7 @@ function renderCustomerHome() {
   }
   app.innerHTML = `${demoBar()}
     <header class="top"><div class="top-row">${brand()}<button class="link" data-a="signOut">Sign out</button></div>
-      <h1>Hi ${esc(first(c.name))}!</h1><div class="sub">${esc(c.address || '')}</div></header>
+      <h1>Hi ${esc(first(state.account?.name || c.name))}!</h1><div class="sub">${esc(c.address || '')}</div></header>
     <main class="no-tabs">
       ${newMsgs ? `<a class="okbar" href="#msgs" style="text-decoration:none">You have ${newMsgs} new message${newMsgs === 1 ? '' : 's'} from Jace. Tap to read.</a>` : ''}
       ${grassCard}${snowCard}
@@ -927,7 +985,7 @@ function renderSignIn() {
       : inviteEmail ? '<div class="okbar">Welcome! Sign in with Google or create a password using the email Jace invited.</div>' : ''}
     <button class="btn google" data-a="google">Sign in with Google</button>
     <div class="muted center small">or with email</div>
-    <label class="f"><span class="lbl">Email</span><input class="inp" id="au_email" type="email" autocomplete="email" autocapitalize="off" value="${esc(inviteEmail)}"></label>
+    <label class="f"><span class="lbl">Email</span><input class="inp" id="au_email" type="email" inputmode="email" autocomplete="email" autocapitalize="off" autocorrect="off" spellcheck="false" value="${esc(inviteEmail)}"></label>
     <label class="f"><span class="lbl">Password</span><input class="inp" id="au_pw" type="password" autocomplete="${up ? 'new-password' : 'current-password'}"></label>
     <button class="btn btn-primary" data-a="${up ? 'signUp' : 'signIn'}">${up ? 'Create account' : 'Sign in'}</button>
     <button class="link center" data-a="authMode">${up ? 'Already have an account? Sign in' : 'First time? Create an account'}</button>
@@ -942,7 +1000,13 @@ function renderJoin() {
 }
 function renderNoAccess() {
   app.innerHTML = authCard(state.setupDone
-    ? `<p>You’re signed in as <b>${esc(state.user.email)}</b>, but this account isn’t set up yet. Ask Jace for an invite link, then tap it to finish joining.</p><button class="btn btn-ghost" data-a="signOut">Sign out</button>`
+    ? (state.waiting
+      ? `<div class="okbar">Thanks, ${esc(first(state.waiting.name))}! Jace has your info and will let you in shortly. This page opens the app by itself once he does.</div>
+        <div class="muted small center">Signed in as ${esc(state.user.email)}</div><button class="link center" data-a="signOut">Use a different account</button>`
+      : `<p>Welcome to Precision Cut Lawns! What’s your name? Jace will get your account ready.</p>
+        <label class="f"><span class="lbl">Your name</span><input class="inp" id="wait_name" autocomplete="name" value="${esc(state.user.name)}"></label>
+        <button class="btn btn-primary" data-a="sendJoin">Send to Jace</button>
+        <div class="muted small center">Signed in as ${esc(state.user.email)}</div><button class="link center" data-a="signOut">Use a different account</button>`)
     : `<p>No one has set up this app yet. Set it up now and <b>${esc(state.user.email)}</b> becomes the admin.</p>
       <label class="f"><span class="lbl">Your name</span><input class="inp" id="setup_name" value="Jace"></label>
       <button class="btn btn-primary" data-a="claimSetup">Set up as admin</button><button class="link center" data-a="signOut">Sign out</button>`);
@@ -1059,8 +1123,11 @@ function addSnowStop(cid, date) {
 }
 const snowDesc = (stop) => 'Snow removal' + ((stop?.visit || 1) > 1 ? ` - visit ${stop.visit}` : '');
 const openText = (title, body, phone, link) => { state.sheet = { kind: 'text', title, body, phone, link }; renderSheet(); };
-function makeInvite(role, customerId) {
-  let label = '';
+function makeInvite(role, customerId, forName = '', fresh = false) {
+  let label = forName;
+  // Reuse an open link for this customer instead of making another one (unless it's for a second person).
+  const open = customerId && !fresh && state.invites.find((i) => i.customerId === customerId && !i.usedBy && i.role === role && !i.label);
+  if (open) return sendInvite(open);
   if (!customerId) {
     const ans = prompt(role === 'crew' ? 'Who is this crew invite for? (so you can tell the links apart)' : 'Who is this invite for? (so you can tell the links apart)', '');
     if (ans === null) return; // cancelled
@@ -1074,7 +1141,7 @@ function makeInvite(role, customerId) {
 function sendInvite(i) {
   const c = i.customerId && cust(i.customerId);
   const tpl = welcomeTpl(i.role === 'crew' ? 'welcomeCrew' : 'welcomeCustomer');
-  const who = c ? first(c.name) : i.label ? first(i.label) : 'there';
+  const who = i.label ? first(i.label) : c ? first(c.name) : 'there';
   openText(c ? 'Invite for ' + who : i.role === 'crew' ? 'Crew invite link' : 'Customer invite link',
     fill(tpl, { first: who, link: inviteLink(i.id), email: '' }), c?.phone || '', inviteLink(i.id));
 }
@@ -1248,7 +1315,7 @@ const A = {
     const name = val('c_name').trim();
     if (!name) return toast('Name is needed');
     const existing = cust(state.custId);
-    const data = { name, phone: val('c_phone'), address: val('c_address'), email: val('c_email').trim().toLowerCase(), deck: val('c_deck'), active: checked('c_active'),
+    const data = { name, name2: val('c_name2').trim(), phone: val('c_phone'), address: val('c_address'), email: val('c_email').trim().toLowerCase(), deck: val('c_deck'), active: checked('c_active'),
       grass: checked('c_grass'), grassPlan: val('c_grassPlan'), snow: checked('c_snow'), snowPlan: val('c_snowPlan') };
     // Read every field before writing: a write can redraw the screen.
     const pricing = { grass: num(val('c_pGrass')), snow: num(val('c_pSnow')), season: num(val('c_pSeason')) };
@@ -1257,10 +1324,50 @@ const A = {
     if (existing) store.update('customers', id, data);
     store.set('pricing', id, pricing);
     store.set('notes', id, notes);
-    const u = userForCustomer(id);
-    if (u) store.update('users', u.id, { name });
+    // Keep the main person's login name in step; a second person's login keeps their own name.
+    usersForCustomer(id).filter((u) => !existing || !u.name || u.name === existing.name).forEach((u) => store.update('users', u.id, { name }));
     if (store.mode === 'local') syncDemoCustomers();
     state.custId = id; state.editing = false; toast('Saved'); render();
+  },
+  async mergeCust() {
+    const keep = cust(state.custId), dup = cust(val('merge_pick'));
+    if (!keep) return; if (!dup) return toast('Pick the duplicate first');
+    const has = (n) => state[n].filter((x) => x.customerId === dup.id);
+    const logins = usersForCustomer(dup.id), visits = has('visits'), stops = has('stops'), reqs = has('requests');
+    if (!confirm(`Merge “${bothNames(dup)}” into “${bothNames(keep)}”?\n\nMoves ${logins.length} login(s), ${visits.length} invoice(s), ${stops.length} route stop(s) and ${reqs.length} message(s)/request(s) to ${keep.name}, then deletes “${dup.name}”. This can't be undone.`)) return;
+    await run(async () => {
+      const k = keep.id, d = dup.id;
+      for (const u of logins) await store.update('users', u.id, { customerId: k });
+      for (const v of visits) await store.update('visits', v.id, { customerId: k, customerName: keep.name });
+      for (const r of reqs) await store.update('requests', r.id, { customerId: k, customerName: keep.name });
+      for (const i of state.invites.filter((x) => x.customerId === d)) await store.update('invites', i.id, { customerId: k });
+      // Route stop ids include the customer id: re-file them under the kept customer (keep theirs if both have one).
+      for (const st of stops) {
+        const { id, ...data } = st;
+        const nid = id.includes(d) ? id.split(d).join(k) : id;
+        if (nid !== id) {
+          if (!state.stops.some((x) => x.id === nid)) {
+            await store.set('stops', nid, { ...data, customerId: k });
+            for (const v of state.visits.filter((x) => x.stopId === id)) await store.update('visits', v.id, { stopId: nid });
+          }
+          await store.remove('stops', id);
+        } else await store.update('stops', id, { customerId: k });
+      }
+      // Fill anything the kept customer is missing from the duplicate.
+      const fill = {};
+      ['phone', 'address', 'email', 'deck'].forEach((f) => { if (!keep[f] && dup[f]) fill[f] = dup[f]; });
+      if (!keep.name2 && dup.name.trim().toLowerCase() !== keep.name.trim().toLowerCase()) fill.name2 = dup.name2 || dup.name;
+      if (!keep.grass && dup.grass) Object.assign(fill, { grass: true, grassPlan: dup.grassPlan });
+      if (!keep.snow && dup.snow) Object.assign(fill, { snow: true, snowPlan: dup.snowPlan });
+      if (Object.keys(fill).length) await store.update('customers', k, fill);
+      const pk = priceOf(k), pd = priceOf(d), pf = {};
+      ['grass', 'snow', 'season'].forEach((f) => { if (!num(pk[f]) && num(pd[f])) pf[f] = num(pd[f]); });
+      if (Object.keys(pf).length) await store.update('pricing', k, pf);
+      const nd = noteOf(d); if (nd) await store.set('notes', k, { text: [noteOf(k), nd].filter(Boolean).join('\n') });
+      for (const n of ['customers', 'pricing', 'notes']) await store.remove(n, d);
+      if (store.mode === 'local') syncDemoCustomers();
+      toast(`Merged into ${keep.name}`); render();
+    });
   },
   async deleteCust() {
     const c = cust(state.custId);
@@ -1271,6 +1378,12 @@ const A = {
   },
   // Invite links (no email needed up front)
   inviteCustomer(el) { makeInvite('customer', el.dataset.cid); },
+  inviteSecond(el) {
+    const c = cust(el.dataset.cid); if (!c) return;
+    const ans = c.name2 || prompt(`Who else on ${first(c.name)}'s account is this for?`, ''); if (ans === null) return;
+    if (!c.name2 && ans.trim()) store.update('customers', c.id, { name2: ans.trim() });
+    makeInvite('customer', c.id, ans.trim(), true);
+  },
   newInvite(el) { makeInvite(el.dataset.role); },
   resendInvite(el) { const i = state.invites.find((x) => x.id === el.dataset.id); if (i) sendInvite(i); },
   labelInvite(el) {
@@ -1443,8 +1556,13 @@ const A = {
 
   // Auth
   async google() { await authRun(() => store.signInGoogle()); },
-  async signIn() { await authRun(() => store.signIn(val('au_email').trim(), val('au_pw'))); },
-  async signUp() { await authRun(() => store.signUp(val('au_email').trim().toLowerCase(), val('au_pw'))); },
+  async signIn() { const e = cleanEmail(val('au_email')), bad = emailProblem(e, val('au_email')); if (bad) { state.authMsg = bad; return render(); } await authRun(() => store.signIn(e, val('au_pw'))); },
+  async signUp() {
+    const e = cleanEmail(val('au_email')), pw = val('au_pw'), bad = emailProblem(e, val('au_email'));
+    if (bad) { state.authMsg = bad; return render(); }
+    if (pw.length < 6) { state.authMsg = 'Pick a password with at least 6 characters.'; return render(); }
+    await authRun(() => store.signUp(e, pw));
+  },
   authMode() { state.authModeSet = true; state.authMode = state.authMode === 'up' ? 'in' : 'up'; state.authMsg = ''; render(); },
   async joinApp() {
     const name = val('join_name').trim();
@@ -1456,20 +1574,45 @@ const A = {
       await checkAccess();
       if (store.mode === 'shared') notifyJoined(name, state.user.email);
     } catch (e) {
+      // The link was already used, cancelled, or couldn't be matched: send their name to Jace to approve.
       console.error(e);
+      const code = joinCode();
       localStorage.removeItem(JOIN_KEY);
-      state.authMsg = e.code === 'invite/used' ? e.message : 'That invite link didn’t work. Ask Jace for a new one.';
-      checkAccess();
+      try { await askToJoin(name, code); } catch (e2) { console.error(e2); state.authMsg = 'Something went wrong. Text Jace and he’ll get you in.'; checkAccess(); }
     }
   },
-  async resetPw() { const e = val('au_email').trim(); if (!e) { state.authMsg = 'Type your email first.'; return render(); } await authRun(async () => { await store.resetPassword(e); state.authMsg = 'Password reset email sent.'; }); },
+  async sendJoin() {
+    const name = val('wait_name').trim();
+    if (!name) { state.authMsg = 'Type your name first.'; return render(); }
+    try { await askToJoin(name, ''); } catch (e) { console.error(e); state.authMsg = 'Something went wrong. Text Jace and he’ll get you in.'; render(); }
+  },
+  async approvePending(el) {
+    const p = state.pending.find((x) => x.id === el.dataset.id); if (!p) return;
+    const pick = document.getElementById('pend_' + p.id)?.value || 'new';
+    await run(async () => {
+      let cid = pick;
+      if (pick === 'new') {
+        cid = newId();
+        await store.set('customers', cid, { name: p.name, email: p.id, phone: '', address: '', deck: '', active: true,
+          grass: false, grassPlan: 'weekly', snow: false, snowPlan: 'perSnow', createdAt: Date.now(), joinedViaInvite: true });
+      }
+      await store.set('users', p.id, { name: p.name, role: 'customer', customerId: cid });
+      const inv = p.invite && state.invites.find((i) => i.id === p.invite && !i.usedBy);
+      if (inv) await store.update('invites', inv.id, { usedBy: p.id, usedAt: Date.now(), name: p.name });
+      await store.remove('pending', p.id);
+      toast(pick === 'new' ? `${p.name} is in. Add their address and plan.` : `${p.name} is in`);
+      if (pick === 'new') { state.tab = 'customers'; state.custId = cid; state.editing = true; render(); }
+    });
+  },
+  dismissPending(el) { if (!confirm('Remove this sign-up? They won’t get in.')) return; store.remove('pending', el.dataset.id); toast('Removed'); },
+  async resetPw() { const e = cleanEmail(val('au_email')), bad = emailProblem(e, val('au_email')); if (bad) { state.authMsg = bad; return render(); } await authRun(async () => { await store.resetPassword(e); state.authMsg = 'Password reset email sent.'; }); },
   async claimSetup() { await authRun(async () => { await store.claimSetup(state.user.email, val('setup_name').trim() || 'Jace'); await checkAccess(); }); },
   async signOut() { localStorage.removeItem('pc_demo_as'); state.locked = false; await store.signOut(); if (store.mode === 'local') location.reload(); },
 };
 async function run(fn) { try { await fn(); } catch (e) { console.error(e); toast(e.message || 'Something went wrong'); } }
 async function authRun(fn) {
   try { state.authMsg = ''; await fn(); }
-  catch (e) { state.authMsg = ({ 'auth/invalid-credential': 'Wrong email or password.', 'auth/email-already-in-use': 'That email already has an account. Sign in instead.', 'auth/weak-password': 'Use at least 6 characters.', 'auth/invalid-email': 'That email doesn’t look right.', 'auth/too-many-requests': 'Too many tries. Wait a few minutes and try again.' })[e.code] || e.message; }
+  catch (e) { state.authMsg = ({ 'auth/invalid-credential': 'Wrong email or password.', 'auth/email-already-in-use': 'That email already has an account. Sign in instead.', 'auth/weak-password': 'Use at least 6 characters.', 'auth/invalid-email': 'That email address isn’t complete. It should look like name@gmail.com.', 'auth/too-many-requests': 'Too many tries. Wait a few minutes and try again.' })[e.code] || e.message; }
   render();
 }
 function download(name, text, type) {

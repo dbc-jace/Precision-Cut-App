@@ -68,6 +68,17 @@ service cloud.firestore {
       allow create: if signedIn() && email == myEmail() && validJoin(request.resource.data);
     }
 
+    // Signed in but not let in yet: a person can leave their name for Jace to approve.
+    // It gives no access by itself; only Jace's approval (a users/ record) does.
+    match /pending/{email} {
+      allow read: if (signedIn() && email == myEmail()) || isAdmin();
+      allow create, update: if signedIn() && email == myEmail() && !exists(userPath(myEmail()))
+        && request.resource.data.keys().hasOnly(['name', 'email', 'at', 'invite'])
+        && request.resource.data.name is string && request.resource.data.name.size() > 0 && request.resource.data.name.size() < 80
+        && request.resource.data.email == myEmail();
+      allow delete: if isAdmin() || (signedIn() && email == myEmail());
+    }
+
     // Business settings (payment info, messages): everyone with an account reads, admin changes.
     match /settings/{id} { allow read: if hasAccount(); allow write: if isAdmin(); }
 
