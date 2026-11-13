@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.13.2';
+import { createStore, newId } from './store.js?v=2026.11.13.3';
 
-const APP_VERSION = '2026.11.13.2'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.13.3'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -85,20 +85,21 @@ const returnLink = () => appLink() + (joinCode() ? '?join=' + joinCode() : '');
 const customMsgs = () => (Array.isArray(settings().customMsgs) ? settings().customMsgs : []);
 const needsInvite = (body) => /\{invite\}/.test(body);
 // A one-time sign-up link for this customer: reuses their open invite, else makes a new id (saved when the text is sent).
+// No customer (texting someone from phone contacts): a fresh new-customer link.
 function inviteIdFor(cid, pending) {
-  const open = state.invites.find((i) => i.customerId === cid && !i.usedBy && i.role === 'customer');
+  const open = cid && state.invites.find((i) => i.customerId === cid && !i.usedBy && i.role === 'customer');
   if (open) return open.id;
-  return (pending[cid] ??= newId());
+  return (pending[cid || '_new'] ??= newId());
 }
 function saveInvite(cid, pending) {
-  const id = pending[cid];
+  const id = pending[cid || '_new'];
   if (!id || state.invites.some((i) => i.id === id)) return;
-  store.set('invites', id, { role: 'customer', customerId: cid, createdAt: Date.now(), createdBy: state.user.email });
+  store.set('invites', id, { role: 'customer', ...(cid ? { customerId: cid } : {}), createdAt: Date.now(), createdBy: state.user.email });
 }
 function fillMsg(body, c, pending) {
   const s = settings();
   return fill(body, { first: first(c?.name), name: c?.name || '', link: appLink(), phone: s.businessPhone, zelle: s.zelle, venmo: s.venmo ? ' or Venmo ' + s.venmo : '', website: s.website || '',
-    invite: c && needsInvite(body) ? inviteLink(inviteIdFor(c.id, pending)) : appLink() });
+    invite: needsInvite(body) ? inviteLink(inviteIdFor(c?.id || '', pending)) : appLink() });
 }
 const welcomeTpl = (key) => (/\{email\}/.test(settings()[key]) ? DEFAULTS[key] : settings()[key]);
 
@@ -752,13 +753,13 @@ function viewSettings() {
       ${msg('reminderMsg', 'Weekly reminder', 'Wednesdays, with the skip link')}${msg('oncallMsg', 'On-call text', '“Would you like your grass cut today?”')}
       ${msg('invoiceMsg', 'Invoice text', 'Sent with the PDF')}
       ${fold('msg_receipt', 'Receipt text', s.receiptEnabled ? 'On' : 'Off', `<label class="check"><input type="checkbox" data-setting="receiptEnabled" ${s.receiptEnabled ? 'checked' : ''}> Offer a receipt text when I mark Paid</label>${field('receiptMsg', 'Text', '', true)}`, true)}
-      ${fold('msg_custom', 'My saved messages', `${customMsgs().length} saved · send from a customer’s page or “Text customers”`, `<div class="muted small">Write your own texts. Also works here: {invite} their own sign-up link, {name} full name, {website}.</div>
-        ${customMsgs().map((m) => `<div class="card" style="background:#F4F6F2">
-          <label class="f"><span class="lbl">Name</span><input class="inp" data-cmsg="${esc(m.id)}" data-field="title" value="${esc(m.title)}" placeholder="e.g. Spring sign-up"></label>
-          <label class="f"><span class="lbl">Text</span><textarea class="inp" data-cmsg="${esc(m.id)}" data-field="body" rows="6">${esc(m.body)}</textarea></label>
-          <button class="link danger" style="align-self:flex-start;min-height:32px" data-a="delCustomMsg" data-id="${esc(m.id)}">Delete</button></div>`).join('')}
-        <button class="btn btn-ghost" data-a="addCustomMsg">+ New message</button>`, true)}
-      ${msg('quoteMsg', 'Quote text', 'Sent with the quote PDF')}${msg('welcomeCustomer', 'Customer welcome', 'Sent with their invite')}${msg('welcomeCrew', 'Crew welcome', 'Sent with their invite')}`),
+      ${msg('quoteMsg', 'Quote text', 'Sent with the quote PDF')}${msg('welcomeCustomer', 'Customer welcome', 'Sent with their invite')}${msg('welcomeCrew', 'Crew welcome', 'Sent with their invite')}
+      ${customMsgs().map((m) => fold('cmsg_' + m.id, esc(m.title || 'Untitled'), 'My message', `<label class="f"><span class="lbl">Name</span><input class="inp" data-cmsg="${esc(m.id)}" data-field="title" value="${esc(m.title)}" placeholder="e.g. Spring sign-up"></label>
+        <label class="f"><span class="lbl">Text</span><textarea class="inp" data-cmsg="${esc(m.id)}" data-field="body" rows="6">${esc(m.body)}</textarea></label>
+        <button class="btn btn-primary" data-a="sendSaved" data-id="${esc(m.id)}">Send</button>
+        <button class="link danger" style="align-self:flex-start;min-height:32px" data-a="delCustomMsg" data-id="${esc(m.id)}">Delete this message</button>`, true)).join('')}
+      <div class="muted small">Your own messages can also use {invite} (a sign-up link just for that person), {name} full name and {website}.</div>
+      <button class="btn btn-ghost" data-a="addCustomMsg">+ New message</button>`),
     fold('users', 'Users', `${users.length} with access${openInvites.length ? ` · ${openInvites.length} open invite${openInvites.length === 1 ? '' : 's'}` : ''}`, `<div class="b">Invite someone</div>
       <div class="muted small">Makes a link you can text or copy to anyone. They tap it, sign up with any email, and type their name. New customers show up in Customers so you can fill in the rest. Each link works once.</div>
       <button class="btn btn-primary" data-a="newInvite" data-role="customer">Customer invite link</button>
@@ -951,7 +952,10 @@ function renderSheet() {
       <button class="btn btn-ghost" data-a="closeSheet">Cancel</button>`;
   } else if (sh.kind === 'compose') {
     const c = cust(sh.cid);
-    inner = `<div class="b" style="font-size:20px">Text ${esc(c?.name || '')}</div><div class="muted small">Change anything you like, then open Messages and tap send.</div>
+    inner = `<div class="b" style="font-size:20px">${sh.pickTo ? 'Send message' : 'Text ' + esc(c?.name || '')}</div>
+      ${sh.pickTo ? `<label class="f"><span class="lbl">To</span><select class="inp" data-change="composeTo"><option value="">Someone in my phone’s contacts (pick in Messages)</option>
+        ${[...state.customers].filter((x) => x.phone).sort(byName).map((x) => `<option value="${x.id}" ${x.id === sh.cid ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label>` : ''}
+      <div class="muted small">${sh.pickTo && !c ? 'Messages opens with the text filled in. Type a name or number in the To line, then tap send.' : 'Change anything you like, then open Messages and tap send.'}</div>
       <label class="f"><span class="sr">Message</span><textarea class="inp" id="cm_body" rows="9">${esc(sh.body)}</textarea></label>
       <button class="btn btn-primary" data-a="sendCompose">Open in Messages</button><button class="btn btn-ghost" data-a="closeSheet">Cancel</button>`;
   } else if (sh.kind === 'bulk') {
@@ -1009,7 +1013,16 @@ const A = {
   closeSheet() { state.sheet = null; renderSheet(); },
 
   // Saved messages
-  addCustomMsg() { store.update('settings', 'main', { customMsgs: customMsgs().concat({ id: newId(), title: 'New message', body: 'Hi {first}, ' }) }); state.openFolds.add('msg_custom'); },
+  addCustomMsg() { const id = newId(); state.openFolds.add('cmsg_' + id); store.update('settings', 'main', { customMsgs: customMsgs().concat({ id, title: 'New message', body: 'Hi {first}, ' }) }); },
+  // Send from Settings: uses the text on screen (even if it hasn't saved yet), to a customer or anyone in phone contacts.
+  sendSaved(el) {
+    const id = el.dataset.id, box = document.querySelector(`[data-cmsg="${CSS.escape(id)}"][data-field="body"]`);
+    clearTimeout(cmsgTimer); saveCustomMsgs();
+    const tpl = box ? box.value : customMsgs().find((x) => x.id === id)?.body || '';
+    const pending = {};
+    state.sheet = { kind: 'compose', pickTo: true, cid: '', tpl, pending, body: fillMsg(tpl, null, pending) };
+    renderSheet();
+  },
   delCustomMsg(el) {
     const m = customMsgs().find((x) => x.id === el.dataset.id);
     if (m && confirm(`Delete “${m.title || 'Untitled'}”?`)) store.update('settings', 'main', { customMsgs: customMsgs().filter((x) => x.id !== m.id) });
@@ -1021,10 +1034,10 @@ const A = {
     renderSheet();
   },
   sendCompose() {
-    const sh = state.sheet, c = cust(sh.cid), body = val('cm_body');
-    if (sh.pending[c.id] && body.includes(sh.pending[c.id])) saveInvite(c.id, sh.pending);
+    const sh = state.sheet, c = cust(sh.cid), body = val('cm_body'), key = c ? c.id : '_new';
+    if (sh.pending[key] && body.includes(sh.pending[key])) saveInvite(c?.id || '', sh.pending);
     state.sheet = null; renderSheet();
-    location.href = smsHref(c.phone, body);
+    location.href = smsHref(c?.phone || '', body);
   },
   bulkPick() { state.sheet = { kind: 'pickMsg', cid: '' }; renderSheet(); },
   bulkList(el) {
@@ -1397,6 +1410,7 @@ document.addEventListener('change', async (ev) => {
   if (el.dataset.setting && (el.tagName === 'SELECT' || el.type === 'checkbox' || el.type === 'time')) return saveSetting(el);
   const k = el.dataset.change;
   if (k === 'setDay') store.update('stops', el.dataset.id, { customerId: el.dataset.cid, weekId: state.week, type: 'grass', status: stopOf(el.dataset.id)?.status || 'scheduled', day: el.value === '' ? null : Number(el.value) });
+  if (k === 'composeTo') { const sh = state.sheet; sh.cid = el.value; sh.body = fillMsg(sh.tpl, cust(sh.cid), sh.pending); renderSheet(); }
   if (k === 'bulkSkip') { state.sheet.skipMembers = el.checked; renderSheet(); }
   if (k === 'snowDate') { state.snowDate = el.value || today(); render(); }
   if (k === 'demoAs') { localStorage.setItem('pc_demo_as', el.value); location.reload(); }
