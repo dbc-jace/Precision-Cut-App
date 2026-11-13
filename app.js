@@ -174,7 +174,6 @@ async function buildPdf(kind, data) {
   if (y > 640) { footer(); doc.addPage(); topBand(); y = 40; }
   if (data.totalLabel) {
     const tx = 340;
-    if (data.lines.length > 1) { font('normal', 10.5, muted); doc.text('Subtotal', tx + 14, y + 4); doc.text(money2(data.total), R - 14, y + 4, { align: 'right' }); y += 14; }
     doc.setFillColor(...forest); doc.roundedRect(tx, y, R - tx, 32, 4, 4, 'F');
     font('bold', 12, [255, 255, 255]); doc.text(data.totalLabel.toUpperCase(), tx + 14, y + 21, { charSpace: 0.8 });
     font('bold', 15, [255, 255, 255]); doc.text(money2(data.total), R - 14, y + 21.5, { align: 'right' });
@@ -182,8 +181,8 @@ async function buildPdf(kind, data) {
   } else { font('italic', 10, muted); doc.text('Prices are per service, as listed above.', R, y + 4, { align: 'right' }); y += 26; }
 
   if (data.paid) {
-    doc.saveGraphicsState(); doc.setGState(new doc.GState({ opacity: 0.18 }));
-    font('bold', 92, lime); doc.text('PAID', 306, 470, { align: 'center', angle: 18 });
+    doc.saveGraphicsState(); doc.setGState(new doc.GState({ opacity: 0.16 }));
+    font('bold', 96, lime); doc.text('PAID', 306, Math.min(Math.max(y + 110, 430), 600), { align: 'center', angle: 14 });
     doc.restoreGraphicsState();
   }
 
@@ -218,8 +217,7 @@ const visitLines = (v) => [{ desc: v.desc || 'Lawn mowing', amount: v.price }, .
 async function invoiceFile(v) {
   const c = cust(v.customerId) || {};
   const s = settings();
-  const meta = [['Invoice #', v.invoiceNo], ['Date', longDate(v.date)], ['Due', v.paid ? 'Paid' : 'Upon receipt']];
-  if (v.paid) meta.push(['Status', 'PAID']);
+  const meta = [['Invoice #', v.invoiceNo], ['Date', longDate(v.date)], v.paid ? ['Status', 'PAID'] : ['Due', 'Upon receipt']];
   const blob = await buildPdf('invoice', { meta, name: v.customerName, to: [c.address, c.phone], lines: visitLines(v), totalLabel: v.paid ? 'Total paid' : 'Total due', total: v.total, paid: !!v.paid,
     terms: v.paid ? 'Paid in full. Thank you!' : `Due upon receipt. Pay by Zelle to ${s.zelle}${s.venmo ? ' or by Venmo' : ''}.` });
   return new File([blob], `Precision Cut Invoice ${v.invoiceNo}.pdf`, { type: 'application/pdf' });
