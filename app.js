@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.13.14';
+import { createStore, newId } from './store.js?v=2026.11.14.1';
 
-const APP_VERSION = '2026.11.13.14'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.14.1'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -654,6 +654,7 @@ function viewCustomer() {
   const c = cust(state.custId), p = priceOf(c.id), admin = isAdmin();
   const u = admin && userForCustomer(c.id);
   const visits = state.visits.filter((v) => v.customerId === c.id).sort((a, b) => (b.date + b.createdAt).localeCompare(a.date + a.createdAt));
+  const owed = visits.filter((v) => !v.paid);
   const grassPlan = { weekly: 'Weekly', biweekly: 'Every 2 weeks', oncall: 'On call ("Grass today?" text)' }[c.grassPlan];
   return `<button class="link" data-a="backToList">← All customers</button>
     <div class="card"><div class="between"><div><div class="b" style="font-size:20px">${esc(c.name)}</div>${c.name2 ? `<div class="muted">and ${esc(c.name2)}</div>` : ''}</div>${admin ? '<button class="btn btn-ghost btn-sm" data-a="editCust">Edit</button>' : ''}</div>
@@ -679,10 +680,13 @@ function viewCustomer() {
         <button class="btn btn-ghost" data-a="inviteSecond" data-cid="${c.id}">Invite ${c.name2 ? esc(first(c.name2)) : 'a second person'} to this account</button>
         <div class="muted small">They get their own login and see the same schedule and invoices.</div>`
       : `<div class="muted">Give ${esc(first(c.name))} a login to see their schedule, skip, request snow removal and pay invoices.</div>
-        <button class="btn btn-primary" data-a="inviteCustomer" data-cid="${c.id}">Invite to the app</button><div class="muted small">Sends a link. They sign up with any email.</div>`}</div>
+        <button class="btn btn-primary" data-a="inviteCustomer" data-cid="${c.id}">Invite to the app</button><div class="muted small">Sends a link. They sign up with any email. Optional: you can schedule, invoice by text and mark paid here without them ever having a login.</div>`}</div>
     <div class="sec">Invoices</div>
-    <div class="card list">${visits.length ? visits.map((v) => `<div class="line"><div class="grow"><div>${shortDate(v.date)} · ${esc(v.desc || 'Lawn mowing')}</div><div class="muted small">${esc(v.invoiceNo)}</div></div>
-        <span class="flex"><b>${money(v.total)}</b>${v.paid ? pill('p-green', 'Paid') : `<button class="btn btn-ghost btn-sm" data-a="sendInvoice" data-id="${v.id}">Send</button>`}</span></div>`).join('') : '<div class="empty">No invoices yet.</div>'}</div>
+    ${owed.length ? `<div class="card"><div class="between"><div><div class="b">Owes ${money(owed.reduce((a, v) => a + num(v.total), 0))}</div><div class="muted small">${owed.length} unpaid invoice${owed.length === 1 ? '' : 's'}</div></div>
+      ${owed.length > 1 ? `<button class="btn btn-lime btn-sm" data-a="markAllPaid" data-cid="${c.id}">Mark all paid</button>` : ''}</div></div>` : ''}
+    <div class="card list">${visits.length ? visits.map((v) => `<div class="line"><div class="grow"><div>${shortDate(v.date)} · ${esc(v.desc || 'Lawn mowing')}</div><div class="muted small">${esc(v.invoiceNo)}${v.paid && v.paidAt ? ' · paid ' + shortDate(ymd(new Date(v.paidAt))) : v.customerSaysPaid ? ' · says they paid' : ''}</div></div>
+        <span class="flex"><b>${money(v.total)}</b>${v.paid ? `${pill('p-green', 'Paid')}<button class="link" style="margin-left:8px;min-height:32px" data-a="markUnpaid" data-id="${v.id}">Undo</button>`
+          : `<button class="btn btn-lime btn-sm" data-a="markPaid" data-id="${v.id}">${v.customerSaysPaid ? 'Confirm paid' : 'Mark paid'}</button><button class="btn btn-ghost btn-sm" data-a="sendInvoice" data-id="${v.id}">${v.sentAt ? 'Resend' : 'Send'}</button>`}</span></div>`).join('') : '<div class="empty">No invoices yet.</div>'}</div>
     ${state.customers.length > 1 ? `<div class="sec">Duplicate?</div>
     <div class="card"><div class="muted small">If this person is in here twice, pick the other one. Their logins, invoices, route stops and messages move to ${esc(first(c.name))}, then the other one is deleted.</div>
       <label class="f"><span class="lbl">Merge into ${esc(c.name)}</span><select class="inp" id="merge_pick"><option value="">Pick the duplicate…</option>${[...state.customers].filter((x) => x.id !== c.id).sort(byName).map((x) => `<option value="${x.id}">${esc(bothNames(x))}${x.email ? ' · ' + esc(x.email) : ''}</option>`).join('')}</select></label>
@@ -1445,6 +1449,14 @@ const A = {
     if (s.receiptEnabled && c?.phone) openText('Receipt for ' + first(v.customerName), fill(s.receiptMsg, { first: first(v.customerName), total: money(v.total), date: shortDate(v.date) }), c.phone);
   },
   markUnpaid(el) { store.update('visits', el.dataset.id, { paid: false, paidAt: null }); },
+  async markAllPaid(el) {
+    const c = cust(el.dataset.cid), owed = state.visits.filter((v) => v.customerId === c.id && !v.paid);
+    const total = owed.reduce((a, v) => a + num(v.total), 0);
+    if (!confirm(`Mark all ${owed.length} of ${first(c.name)}'s invoices paid (${money(total)})?`)) return;
+    const at = Date.now();
+    for (const v of owed) await store.update('visits', v.id, { paid: true, paidAt: at });
+    toast(`Marked ${owed.length} paid`);
+  },
   delVisit(el) {
     const v = visitOf(el.dataset.id);
     if (!confirm(`Delete invoice ${v.invoiceNo} for ${money(v.total)}?`)) return;
