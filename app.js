@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.14.5';
+import { createStore, newId } from './store.js?v=2026.11.14.6';
 
-const APP_VERSION = '2026.11.14.5'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.14.6'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -654,7 +654,7 @@ function viewRoute() {
     const custOpts = [...state.customers].sort(byName).map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
     body = waiting.map((p) => {
       const inv = p.invite && state.invites.find((i) => i.id === p.invite);
-      const match = inv?.customerId || state.customers.find((c) => (c.email || '').toLowerCase() === p.id)?.id || '';
+      const match = inv?.customerId || p.suggest || state.customers.find((c) => (c.email || '').toLowerCase() === p.id)?.id || '';
       return `<div class="card"><div class="between"><div class="b">${esc(p.name)}</div>${pill('p-orange', 'Waiting to join')}</div>
         <div class="muted small">${esc(p.id)} · ${p.at ? shortDate(new Date(p.at).toISOString().slice(0, 10)) : ''}${inv?.label ? ' · link sent to ' + esc(inv.label) : ''}</div>
         <label class="f"><span class="lbl">Let them in as</span><select class="inp" id="pend_${esc(p.id)}"><option value="new">A new customer</option>${custOpts.replace(`value="${match}"`, `value="${match}" selected`)}</select></label>
@@ -1684,7 +1684,16 @@ const A = {
     let joinedRole;
     try {
       state.authMsg = '';
-      joinedRole = await store.redeemInvite(joinCode(), state.user.email, name);
+      if (store.mode === 'shared') {
+        // The server connects them to the record Jace already made (by email or name), or asks Jace when unsure.
+        const r = await store.call('joinInvite', { code: joinCode(), name });
+        if (r.pending) {
+          localStorage.removeItem(JOIN_KEY);
+          state.waiting = { name }; state.access = 'none'; waitForApproval(); render();
+          return;
+        }
+        joinedRole = r.role;
+      } else joinedRole = await store.redeemInvite(joinCode(), state.user.email, name);
     } catch (e) {
       // The link was already used, cancelled, or couldn't be matched: send their name to Jace to approve.
       console.error(e);

@@ -79,6 +79,75 @@ exports.payLink = onCall({ secrets: [SQUARE_TOKEN], cors: true }, async (req) =>
   return { url: link.url, cents };
 });
 
+// Join with an invite link. Done on the server so it can connect the person to the customer
+// record Jace already made for them (matched by email or name) instead of creating a duplicate.
+const norm = (t) => String(t || '').toLowerCase().normalize('NFKD').replace(/[^a-z\s]/g, ' ').split(/\s+/).filter(Boolean);
+function matchCustomer(customers, name, email) {
+  const byEmail = customers.filter((c) => (c.email || '').toLowerCase() === email);
+  if (byEmail.length === 1) return byEmail[0];
+  const typed = norm(name), full = typed.join(' ');
+  if (!typed.length) return null;
+  const exact = customers.filter((c) => [norm(c.name).join(' '), norm(c.name2).join(' ')].includes(full));
+  if (exact.length === 1) return exact[0];
+  // Every word of the saved name appears in what they typed ("Barry" ↔ "Barry Smith"), and only one customer fits.
+  const fits = customers.filter((c) => [c.name, c.name2].some((n) => { const w = norm(n); return w.length && w.every((x) => typed.includes(x)); }));
+  return fits.length === 1 ? fits[0] : null;
+}
+// Weaker: same first name and only one such customer ("Iryna" ↔ "Iryna Feddorchuk"). Jace approves these.
+function likelyCustomer(customers, name) {
+  const f = norm(name)[0];
+  if (!f) return null;
+  const hits = customers.filter((c) => [c.name, c.name2].some((n) => norm(n)[0] === f));
+  return hits.length === 1 ? hits[0] : null;
+}
+exports.joinInvite = onCall({ cors: true }, async (req) => {
+  const email = (req.auth?.token?.email || '').toLowerCase();
+  if (!email) throw new HttpsError('unauthenticated', 'Sign in first.');
+  const code = String(req.data?.code || ''), name = String(req.data?.name || '').trim().slice(0, 79);
+  if (!code || !name) throw new HttpsError('invalid-argument', 'Missing name or link.');
+  const userRef = db.doc('users/' + email), invRef = db.doc('invites/' + code);
+  return db.runTransaction(async (tx) => {
+    const [userSnap, invSnap] = await Promise.all([tx.get(userRef), tx.get(invRef)]);
+    if (userSnap.exists) return { role: userSnap.data().role, customerId: userSnap.data().customerId || null, already: true };
+    const inv = invSnap.data();
+    if (!inv || inv.usedBy) throw new HttpsError('failed-precondition', 'This invite link was already used or cancelled.');
+    const now = Date.now();
+    let cid = null, linked = false;
+    if (inv.role === 'customer') {
+      cid = inv.customerId || null;
+      if (cid) linked = true;
+      else {
+        const [custSnap, usersSnap] = await Promise.all([tx.get(db.collection('customers')), tx.get(db.collection('users'))]);
+        const taken = new Set(usersSnap.docs.map((d) => d.data().customerId).filter(Boolean));
+        const free = custSnap.docs.map((d) => ({ id: d.id, ...d.data() })).filter((c) => !taken.has(c.id));
+        const hit = matchCustomer(free, name, email);
+        if (hit) { cid = hit.id; linked = true; }
+        else {
+          const maybe = likelyCustomer(free, name);
+          if (maybe) {
+            // Not sure enough to hand over someone's account: ask Jace, with the likely match picked.
+            tx.set(db.doc('pending/' + email), { name, email, at: now, invite: code, suggest: maybe.id });
+            logger.info('Join needs approval', email, 'likely', maybe.id);
+            return { pending: true };
+          }
+        }
+      }
+      if (cid && linked) {
+        const cRef = db.doc('customers/' + cid), c = (await tx.get(cRef)).data() || {};
+        if (!c.email) tx.set(cRef, { email }, { merge: true });
+      } else {
+        cid = db.collection('customers').doc().id;
+        tx.set(db.doc('customers/' + cid), { name, email, phone: '', address: '', deck: '', active: true, grass: false, grassPlan: 'weekly',
+          snow: false, snowPlan: 'perSnow', createdAt: now, joinedViaInvite: true });
+      }
+    }
+    tx.set(userRef, { name, role: inv.role, invite: code, ...(cid ? { customerId: cid } : {}) });
+    tx.update(invRef, { usedBy: email, usedAt: now, name, ...(cid ? { linkedCustomerId: cid } : {}) });
+    logger.info('Joined with invite', email, inv.role, cid, linked ? 'linked to existing record' : 'new record');
+    return { role: inv.role, customerId: cid, linked };
+  });
+});
+
 // Pay the customer's whole balance (every unpaid invoice) with one Square link.
 // Jace can call it for any customer; a customer only for their own account.
 exports.payBalance = onCall({ secrets: [SQUARE_TOKEN], cors: true }, async (req) => {
