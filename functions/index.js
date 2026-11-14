@@ -1,0 +1,97 @@
+// Square card / Apple Pay for invoices.
+//  - payLink: makes (or reuses) a Square payment link for one invoice. Jace or that invoice's customer can call it.
+//  - squareWebhook: Square calls this when a payment completes; the invoice is marked paid automatically.
+// The Square access token and webhook key live in Firebase secrets, never in the app.
+const { onCall, onRequest, HttpsError } = require('firebase-functions/v2/https');
+const { defineSecret, defineString } = require('firebase-functions/params');
+const logger = require('firebase-functions/logger');
+const { initializeApp } = require('firebase-admin/app');
+const { getFirestore } = require('firebase-admin/firestore');
+const crypto = require('crypto');
+
+initializeApp();
+const db = getFirestore();
+
+const SQUARE_TOKEN = defineSecret('SQUARE_TOKEN');
+const SQUARE_WEBHOOK_KEY = defineSecret('SQUARE_WEBHOOK_KEY');
+const SQUARE_ENV = defineString('SQUARE_ENV', { default: 'sandbox' }); // 'sandbox' while testing, then 'production'
+const SQUARE_LOCATION_ID = defineString('SQUARE_LOCATION_ID');
+const SQUARE_WEBHOOK_URL = defineString('SQUARE_WEBHOOK_URL', { default: '' }); // exactly as entered in Square
+const APP_URL = 'https://app.precisioncutlawns.org/';
+
+const api = () => (SQUARE_ENV.value() === 'production' ? 'https://connect.squareup.com' : 'https://connect.squareupsandbox.com');
+
+async function square(path, body) {
+  const r = await fetch(api() + path, {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + SQUARE_TOKEN.value(), 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    logger.error('Square error', r.status, data);
+    throw new HttpsError('internal', 'Square could not make the payment link. ' + (data.errors?.[0]?.detail || ''));
+  }
+  return data;
+}
+
+exports.payLink = onCall({ secrets: [SQUARE_TOKEN], cors: true }, async (req) => {
+  const email = (req.auth?.token?.email || '').toLowerCase();
+  if (!email) throw new HttpsError('unauthenticated', 'Sign in first.');
+  const visitId = String(req.data?.visitId || '');
+  if (!visitId) throw new HttpsError('invalid-argument', 'Missing invoice.');
+
+  const [userSnap, visitSnap] = await Promise.all([db.doc('users/' + email).get(), db.doc('visits/' + visitId).get()]);
+  const user = userSnap.data();
+  const v = visitSnap.data();
+  if (!user || !v) throw new HttpsError('not-found', 'Invoice not found.');
+  const allowed = user.role === 'admin' || (user.role === 'customer' && user.customerId === v.customerId);
+  if (!allowed) throw new HttpsError('permission-denied', 'Not your invoice.');
+  if (v.paid) throw new HttpsError('failed-precondition', 'This invoice is already paid.');
+
+  const cents = Math.round(Number(v.total) * 100);
+  if (!(cents >= 100)) throw new HttpsError('failed-precondition', 'Invoice total is too small for card payment.');
+  const env = SQUARE_ENV.value();
+  if (v.square?.url && v.square.cents === cents && v.square.env === env) return { url: v.square.url };
+
+  const data = await square('/v2/online-checkout/payment-links', {
+    idempotency_key: `${visitId}-${cents}-${env}`.slice(0, 45),
+    quick_pay: {
+      name: `Precision Cut Lawns · ${v.desc || 'Lawn mowing'} · ${v.invoiceNo || ''}`.slice(0, 255),
+      price_money: { amount: cents, currency: 'USD' },
+      location_id: SQUARE_LOCATION_ID.value(),
+    },
+    checkout_options: { redirect_url: APP_URL + '#paid', ask_for_shipping_address: false },
+    payment_note: `Invoice ${v.invoiceNo || visitId}`,
+  });
+  const link = data.payment_link;
+  await visitSnap.ref.update({ square: { url: link.url, orderId: link.order_id, linkId: link.id, cents, env, at: Date.now() } });
+  return { url: link.url };
+});
+
+// Square signs each notification: base64(HMAC-SHA256(key, notificationUrl + body)).
+function validSignature(req) {
+  const sig = req.get('x-square-hmacsha256-signature') || '';
+  const url = SQUARE_WEBHOOK_URL.value();
+  if (!sig || !url) return false;
+  const expected = crypto.createHmac('sha256', SQUARE_WEBHOOK_KEY.value()).update(url + req.rawBody.toString('utf8')).digest('base64');
+  const a = Buffer.from(sig), b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+exports.squareWebhook = onRequest({ secrets: [SQUARE_WEBHOOK_KEY] }, async (req, res) => {
+  if (req.method !== 'POST') return res.status(405).send('POST only');
+  if (!validSignature(req)) { logger.warn('Square webhook: bad signature'); return res.status(403).send('Bad signature'); }
+  const ev = req.body || {};
+  const p = ev.data?.object?.payment;
+  if (!/^payment\.(created|updated)$/.test(ev.type || '') || !p || p.status !== 'COMPLETED' || !p.order_id) return res.status(200).send('ignored');
+
+  const q = await db.collection('visits').where('square.orderId', '==', p.order_id).limit(1).get();
+  if (q.empty) { logger.warn('Square payment with no matching invoice', p.order_id); return res.status(200).send('no invoice'); }
+  const doc = q.docs[0];
+  if (!doc.data().paid) {
+    await doc.ref.update({ paid: true, paidAt: Date.now(), paidVia: 'square', squarePaymentId: p.id, squarePaidCents: p.amount_money?.amount || null });
+    logger.info('Invoice paid through Square', doc.id);
+  }
+  res.status(200).send('ok');
+});

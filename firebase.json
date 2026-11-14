@@ -1,8 +1,42 @@
 {
   "hosting": {
     "public": ".",
-    "ignore": ["firebase.json", "firestore.rules", "README.md", "HANDOFF.md", "CLAUDE.md", "bump-version.sh", ".firebaserc", "**/.*", "Old Mac version/**"],
-    "headers": [{ "source": "**/*.@(js|css|html|json)", "headers": [{ "key": "Cache-Control", "value": "no-cache" }] }]
+    "ignore": [
+      "firebase.json",
+      "firestore.rules",
+      "README.md",
+      "HANDOFF.md",
+      "CLAUDE.md",
+      "bump-version.sh",
+      ".firebaserc",
+      "**/.*",
+      "Old Mac version/**",
+      "functions/**"
+    ],
+    "headers": [
+      {
+        "source": "**/*.@(js|css|html|json)",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache"
+          }
+        ]
+      }
+    ]
   },
-  "firestore": { "rules": "firestore.rules" }
+  "firestore": {
+    "rules": "firestore.rules"
+  },
+  "functions": [
+    {
+      "source": "functions",
+      "codebase": "default",
+      "ignore": [
+        "node_modules",
+        ".git",
+        "*.local"
+      ]
+    }
+  ]
 }

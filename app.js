@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.14.1';
+import { createStore, newId } from './store.js?v=2026.11.14.2';
 
-const APP_VERSION = '2026.11.14.1'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.14.2'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -55,6 +55,7 @@ const DEFAULTS = {
   oncallMsg: 'Hi, it\'s Jace with Precision Cut Lawns. Would you like your grass cut today?',
   invoiceMsg: 'Hi {first}, thanks for choosing Precision Cut Lawns! Your invoice for {total} is attached. Pay by Zelle to {zelle}{venmo}, or in your account: {link}',
   receiptEnabled: false,
+  squareOn: false, // Card / Apple Pay through Square (needs the Square setup done first)
   receiptMsg: 'Got it, thanks {first}! Received {total} for {date}. - Precision Cut Lawns',
   quoteMsg: 'Hi {first}, here\'s your quote from Precision Cut Lawns. Call or text {phone} with any questions!',
   welcomeCustomer: 'Hi {first}! Welcome to Precision Cut Lawns. Tap this link to set up your account, where you can see your schedule, skip a week, request snow removal and pay your invoices:\n\n{link}\n\nTip: tap Share, then "Add to Home Screen" to keep it handy. - Jace',
@@ -298,7 +299,11 @@ async function sharePdf(file, text, phone) {
 async function sendInvoice(v) {
   const s = settings();
   const c = cust(v.customerId) || {};
-  const text = fill(s.invoiceMsg, { first: first(v.customerName), total: money(v.total), zelle: s.zelle, venmo: s.venmo ? ' or Venmo ' + s.venmo : '', link: appLink(), phone: s.businessPhone });
+  let text = fill(s.invoiceMsg, { first: first(v.customerName), total: money(v.total), zelle: s.zelle, venmo: s.venmo ? ' or Venmo ' + s.venmo : '', link: appLink(), phone: s.businessPhone });
+  if (s.squareOn && store.call) {
+    try { const { url } = await store.call('payLink', { visitId: v.id }); text += `\n\nPay by card or Apple Pay: ${url}`; }
+    catch (e) { console.error(e); toast('Couldn’t make the card pay link. Sending without it.'); }
+  }
   const sent = await sharePdf(await invoiceFile(v), text, c.phone);
   if (sent) { await store.update('visits', v.id, { sentAt: Date.now() }); toast('Invoice ready to send'); }
 }
@@ -478,7 +483,7 @@ function renderStaff() {
   const saysPaid = state.visits.filter((v) => !v.paid && v.customerSaysPaid).length;
   const view = { route: viewRoute, customers: viewCustomers, money: viewMoney, quotes: viewQuotes, settings: viewSettings }[state.tab]();
   const titles = { route: ['Route', state.routeSeg === 'snow' ? 'Snow removal' : state.routeSeg === 'inbox' ? 'Requests from customers' : 'Week of ' + weekLabel(state.week)],
-    customers: ['Customers', `${state.customers.length} customer${state.customers.length === 1 ? '' : 's'}`], money: ['Money', 'Income, expenses and who owes'],
+    customers: ['Customers', custSummary()], money: ['Money', 'Income, expenses and who owes'],
     quotes: ['Quotes', 'For new customers and custom jobs'], settings: ['Settings', 'Only you can see this'] }[state.tab];
   if (state.tab === 'customers' && state.custId) titles[0] = state.editing ? (cust(state.custId) ? 'Edit customer' : 'New customer') : 'Customer';
   if (state.tab === 'customers' && state.editing && !state.custId) titles[0] = 'New customer';
@@ -636,6 +641,12 @@ function viewRoute() {
 }
 
 /* ----- Customers ----- */
+// Header line: every customer counts, whether or not they have their own login.
+function custSummary() {
+  const active = state.customers.filter((c) => c.active).length, paused = state.customers.length - active;
+  const onApp = state.customers.filter((c) => usersForCustomer(c.id).length).length;
+  return `${active} active${paused ? ` · ${paused} paused` : ''}${isAdmin() ? ` · ${onApp} use the app` : ''}`;
+}
 function viewCustomers() {
   if (state.editing) return viewCustomerEdit();
   if (state.custId && cust(state.custId)) return viewCustomer();
@@ -646,7 +657,7 @@ function viewCustomers() {
       ${isAdmin() ? '<button class="btn btn-primary" data-a="newCust">+ Add</button>' : ''}</div>
     ${isAdmin() && state.customers.length ? '<button class="btn btn-ghost" data-a="bulkPick">Text customers a saved message</button>' : ''}
     ${list.length ? list.map((c) => `<button class="rowbtn" data-a="openCust" data-id="${c.id}"><div class="avatar">${esc(initials(c.name))}</div>
-      <div class="grow"><div class="b">${esc(bothNames(c))}</div><div class="muted">${esc(c.address || 'No address')}</div></div>
+      <div class="grow"><div class="b">${esc(bothNames(c))}${isAdmin() && usersForCustomer(c.id).length ? ' <span class="pill p-green" style="font-size:11px;padding:1px 7px;vertical-align:middle">App</span>' : ''}</div><div class="muted">${esc(c.address || 'No address')}</div></div>
       <div style="text-align:right">${isAdmin() && priceOf(c.id).grass ? `<div class="b">${money(priceOf(c.id).grass)}</div>` : ''}<div class="muted small">${c.active ? svc(c) : 'Paused'}</div></div></button>`).join('')
       : `<div class="card empty">${state.customers.length ? 'No matches.' : 'No customers yet. Tap “+ Add” to enter your first one.'}</div>`}`;
 }
@@ -684,7 +695,7 @@ function viewCustomer() {
     <div class="sec">Invoices</div>
     ${owed.length ? `<div class="card"><div class="between"><div><div class="b">Owes ${money(owed.reduce((a, v) => a + num(v.total), 0))}</div><div class="muted small">${owed.length} unpaid invoice${owed.length === 1 ? '' : 's'}</div></div>
       ${owed.length > 1 ? `<button class="btn btn-lime btn-sm" data-a="markAllPaid" data-cid="${c.id}">Mark all paid</button>` : ''}</div></div>` : ''}
-    <div class="card list">${visits.length ? visits.map((v) => `<div class="line"><div class="grow"><div>${shortDate(v.date)} · ${esc(v.desc || 'Lawn mowing')}</div><div class="muted small">${esc(v.invoiceNo)}${v.paid && v.paidAt ? ' · paid ' + shortDate(ymd(new Date(v.paidAt))) : v.customerSaysPaid ? ' · says they paid' : ''}</div></div>
+    <div class="card list">${visits.length ? visits.map((v) => `<div class="line"><div class="grow"><div>${shortDate(v.date)} · ${esc(v.desc || 'Lawn mowing')}</div><div class="muted small">${esc(v.invoiceNo)}${v.paid && v.paidAt ? ' · paid ' + (v.paidVia === 'square' ? 'by card ' : '') + shortDate(ymd(new Date(v.paidAt))) : v.customerSaysPaid ? ' · says they paid' : ''}</div></div>
         <span class="flex"><b>${money(v.total)}</b>${v.paid ? `${pill('p-green', 'Paid')}<button class="link" style="margin-left:8px;min-height:32px" data-a="markUnpaid" data-id="${v.id}">Undo</button>`
           : `<button class="btn btn-lime btn-sm" data-a="markPaid" data-id="${v.id}">${v.customerSaysPaid ? 'Confirm paid' : 'Mark paid'}</button><button class="btn btn-ghost btn-sm" data-a="sendInvoice" data-id="${v.id}">${v.sentAt ? 'Resend' : 'Send'}</button>`}</span></div>`).join('') : '<div class="empty">No invoices yet.</div>'}</div>
     ${state.customers.length > 1 ? `<div class="sec">Duplicate?</div>
@@ -749,7 +760,7 @@ function viewMoney() {
           <button class="btn btn-ghost btn-sm" data-a="delVisit" data-id="${v.id}" aria-label="Delete invoice">✕</button></div></div>`).join('')
         : '<div class="card empty" style="color:#1D4A22;font-weight:600">Everyone’s paid up.</div>'}
       <div class="sec">Recently paid</div>
-      <div class="card list">${paid.sort((a, b) => b.paidAt - a.paidAt).slice(0, 15).map((v) => `<div class="line"><div class="grow"><div>${esc(v.customerName)}</div><div class="muted small">Paid ${shortDate(ymd(new Date(v.paidAt)))}</div></div><b>${money(v.total)}</b>
+      <div class="card list">${paid.sort((a, b) => b.paidAt - a.paidAt).slice(0, 15).map((v) => `<div class="line"><div class="grow"><div>${esc(v.customerName)}</div><div class="muted small">Paid ${v.paidVia === 'square' ? 'by card ' : ''}${shortDate(ymd(new Date(v.paidAt)))}</div></div><b>${money(v.total)}</b>
         <button class="link" style="margin-left:10px;min-height:32px" data-a="markUnpaid" data-id="${v.id}">Undo</button></div>`).join('') || '<div class="empty">Nothing yet.</div>'}</div>`;
   } else {
     const ex = [...state.expenses].sort((a, b) => b.date.localeCompare(a.date) || b.createdAt - a.createdAt);
@@ -868,6 +879,8 @@ function viewSettings() {
       <div><div class="lbl">Zelle QR code</div>${s.zelleQr ? `<div class="qr"><img src="${esc(s.zelleQr)}" alt="Zelle QR code"></div><button class="link danger" data-a="removeZelleQr">Remove QR</button>` : '<div class="muted small">Save your QR from your bank app’s Zelle screen, then upload it here.</div>'}
         <label class="btn btn-ghost full" style="margin-top:6px">Upload Zelle QR<input type="file" accept="image/*" data-change="zelleQr" class="sr"></label></div>
       ${field('venmo', 'Venmo link (business)', 'e.g. venmo.com/u/PrecisionCutLawns')}
+      <label class="check"><input type="checkbox" data-setting="squareOn" ${s.squareOn ? 'checked' : ''}> Card &amp; Apple Pay through Square</label>
+      <div class="muted small">Adds a “Pay with card / Apple Pay” button to customers’ invoices and a pay link to invoice texts. Paid invoices are marked paid by themselves. Square keeps 3.3% + 30¢ per card payment.</div>
       <div class="muted small">Customers see these with a QR code and a Pay button in their account. Venmo shows once it’s filled in.</div>`),
     fold('business', 'Business info', esc(s.businessPhone), `${field('businessPhone', 'Phone on quotes and invoices')}${field('businessEmail', 'Email on quotes and invoices')}${field('website', 'Website link', 'Add your website')}`),
     fold('skips', 'Skips', `Deadline: ${esc(deadlineText(weekStart(new Date())))}`, `<div class="muted small">Customers get 1 free skip a month. They can skip until:</div>
@@ -968,6 +981,7 @@ function renderCustomerHome() {
       ${newMsgs ? `<a class="okbar" href="#msgs" style="text-decoration:none">You have ${newMsgs} new message${newMsgs === 1 ? '' : 's'} from Jace. Tap to read.</a>` : ''}
       ${grassCard}${snowCard}
       ${unpaid.length ? `<div class="sec">To pay</div>${unpaid.map((v) => `<div class="card"><div class="between"><div><div class="b">${esc(v.desc || 'Lawn mowing')}</div><div class="muted">${shortDate(v.date)} · ${esc(v.invoiceNo)}</div></div><div class="big">${money(v.total)}</div></div>
+          ${s.squareOn ? `<button class="btn btn-primary" data-a="payCard" data-id="${v.id}">Pay with card / Apple Pay</button>` : ''}
           <button class="btn btn-ghost" data-a="custPdf" data-id="${v.id}">View invoice (PDF)</button>
           ${v.customerSaysPaid ? '<div class="okbar">Thanks! I’ll confirm once it comes through.</div>' : `<button class="btn btn-primary" data-a="custPaid" data-id="${v.id}">I’ve paid this</button>`}</div>`).join('')}` : '<div class="card"><div class="okbar">You’re all paid up. Thank you!</div></div>'}
       <div class="sec">How to pay</div>
@@ -1580,6 +1594,10 @@ const A = {
     renderSheet();
   },
   async custPdf(el) { const v = visitOf(el.dataset.id); await run(async () => { const f = await invoiceFile(v); const url = URL.createObjectURL(f); window.open(url, '_blank') || (location.href = url); }); },
+  async payCard(el) {
+    toast('Opening secure checkout…');
+    await run(async () => { const { url } = await store.call('payLink', { visitId: el.dataset.id }); location.href = url; });
+  },
   custPaid(el) { if (!confirm('Let Jace know you sent the payment?')) return; store.update('visits', el.dataset.id, { customerSaysPaid: true, customerSaysPaidAt: Date.now() }); toast('Thanks! Jace will confirm.'); },
   copyZelle() { navigator.clipboard?.writeText(settings().zelle).then(() => toast('Copied Zelle number')); },
   togglePaid() { state.showPaidHistory = !state.showPaidHistory; render(); },
@@ -1754,6 +1772,8 @@ async function checkForUpdate({ auto = false } = {}) {
 }
 // Clean the ?v= off the address after an update so links and the home screen stay tidy.
 if (/[?&]v=/.test(location.search)) history.replaceState(null, '', location.pathname + location.hash);
+// Back from Square checkout: thank them (Square tells the app it's paid a moment later).
+if (location.hash === '#paid') { history.replaceState(null, '', location.pathname); setTimeout(() => toast('Thank you! Your payment went through. It shows as paid in a minute.'), 1500); }
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && Date.now() - upd.checkedAt > 60000) checkForUpdate({ auto: true });
 });

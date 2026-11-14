@@ -21,6 +21,7 @@ async function firebaseStore(onError) {
     import(FB + 'firebase-auth.js'),
   ]);
   const app = initializeApp(firebaseConfig);
+  let fnsP = null;
   const db = fs.getFirestore(app);
   const auth = au.getAuth(app);
   const fail = (e) => { console.error(e); onError?.(e); };
@@ -83,6 +84,12 @@ async function firebaseStore(onError) {
     set(name, id, data) { return fs.setDoc(fs.doc(db, name, id), data).catch(fail); },
     update(name, id, data) { return fs.setDoc(fs.doc(db, name, id), data, { merge: true }).catch(fail); },
     remove(name, id) { return fs.deleteDoc(fs.doc(db, name, id)).catch(fail); },
+    // Server functions (Square payment links). Loaded only when someone pays by card.
+    async call(fn, data) {
+      fnsP ??= import(FB + 'firebase-functions.js').then((m) => ({ m, f: m.getFunctions(app) }));
+      const { m, f } = await fnsP;
+      return (await m.httpsCallable(f, fn)(data)).data;
+    },
   };
 }
 
