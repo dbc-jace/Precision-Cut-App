@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.14.3';
+import { createStore, newId } from './store.js?v=2026.11.14.4';
 
-const APP_VERSION = '2026.11.14.3'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.14.4'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -18,6 +18,8 @@ const first = (n) => String(n || '').trim().split(/\s+/)[0] || 'there';
 const initials = (n) => String(n || '?').split(/\s+/).map((w) => w[0] || '').join('').slice(0, 2).toUpperCase();
 const digits10 = (p) => (String(p || '').match(/\d/g) || []).join('').slice(-10);
 const firstPhone = (p) => { const m = String(p || '').match(/\+?1?[\s.(-]*\d{3}[\s.)-]*\d{3}[\s.-]*\d{4}/); return m ? digits10(m[0]) : digits10(p); };
+const CARD_FEE = 0.033; // Square's online card rate; customers can choose to cover it
+const withFee = (total) => Math.round(num(total) * 100 * (1 + CARD_FEE)) / 100;
 const fill = (t, v) => String(t || '').replace(/\{(\w+)\}/g, (m, k) => (k in v ? v[k] : m));
 const appLink = () => location.origin + location.pathname;
 const isApple = /iPhone|iPad|iPod|Macintosh/.test(navigator.userAgent);
@@ -301,7 +303,11 @@ async function sendInvoice(v) {
   const c = cust(v.customerId) || {};
   let text = fill(s.invoiceMsg, { first: first(v.customerName), total: money(v.total), zelle: s.zelle, venmo: s.venmo ? ' or Venmo ' + s.venmo : '', link: appLink(), phone: s.businessPhone });
   if (s.squareOn && store.call) {
-    try { const { url } = await store.call('payLink', { visitId: v.id }); text += `\n\nPay by card or Apple Pay: ${url}`; }
+    try {
+      const { url } = await store.call('payLink', { visitId: v.id });
+      text += `\n\nPay by card or Apple Pay: ${url}`;
+      if (s.cardFeeOption !== false) { const f = await store.call('payLink', { visitId: v.id, coverFee: true }); text += `\nOr ${money(withFee(v.total))} to cover the 3.3% card fee (optional): ${f.url}`; }
+    }
     catch (e) { console.error(e); toast('Couldn’t make the card pay link. Sending without it.'); }
   }
   const sent = await sharePdf(await invoiceFile(v), text, c.phone);
@@ -547,8 +553,6 @@ function stopCard(r, kind) {
   const note = noteOf(c.id);
   const v = stop?.visitId && visitOf(stop.visitId);
   const admin = isAdmin();
-  const dayPick = kind === 'grass' && r.status === 'scheduled' ? `<select class="inp" style="width:auto;min-height:36px;font-size:14px" data-change="setDay" data-id="${r.id}" data-cid="${c.id}" aria-label="Day for ${esc(c.name)}">
-      <option value="">Any day</option>${DAYS.map((d, i) => `<option value="${i}" ${stop?.day === i ? 'selected' : ''}>${d.slice(0, 3)}</option>`).join('')}</select>` : '';
   let action = '';
   if (r.status === 'scheduled') {
     action = `<div class="flex"><button class="btn btn-lime grow" data-a="markDone" data-id="${r.id}" data-cid="${c.id}" data-kind="${kind}">Mark done</button>
@@ -570,7 +574,6 @@ function stopCard(r, kind) {
     <div class="between"><button class="plain grow" data-a="openCust" data-id="${c.id}"><div class="b" style="font-size:16px">${esc(c.name)}</div></button>${pill(r.status === 'skipped' ? 'p-gray' : 'p-blue', plan)}</div>
     ${c.address ? `<a href="https://maps.apple.com/?q=${encodeURIComponent(c.address)}" class="muted">${esc(c.address)}</a>` : ''}
     ${(c.deck || note) ? `<div class="muted small">${c.deck ? 'Deck ' + esc(c.deck) : ''}${c.deck && note ? ' · ' : ''}${esc(note)}</div>` : ''}
-    ${dayPick ? `<div class="flex"><span class="muted small">Planned:</span>${dayPick}</div>` : ''}
     ${action}</div>`;
 }
 function viewRoute() {
@@ -695,7 +698,7 @@ function viewCustomer() {
     <div class="sec">Invoices</div>
     ${owed.length ? `<div class="card"><div class="between"><div><div class="b">Owes ${money(owed.reduce((a, v) => a + num(v.total), 0))}</div><div class="muted small">${owed.length} unpaid invoice${owed.length === 1 ? '' : 's'}</div></div>
       ${owed.length > 1 ? `<button class="btn btn-lime btn-sm" data-a="markAllPaid" data-cid="${c.id}">Mark all paid</button>` : ''}</div></div>` : ''}
-    <div class="card list">${visits.length ? visits.map((v) => `<div class="line"><div class="grow"><div>${shortDate(v.date)} · ${esc(v.desc || 'Lawn mowing')}</div><div class="muted small">${esc(v.invoiceNo)}${v.paid && v.paidAt ? ' · paid ' + (v.paidVia === 'square' ? 'by card ' : '') + shortDate(ymd(new Date(v.paidAt))) : v.customerSaysPaid ? ' · says they paid' : ''}</div></div>
+    <div class="card list">${visits.length ? visits.map((v) => `<div class="line"><div class="grow"><div>${shortDate(v.date)} · ${esc(v.desc || 'Lawn mowing')}</div><div class="muted small">${esc(v.invoiceNo)}${v.paid && v.paidAt ? ' · paid ' + (v.paidVia === 'square' ? 'by card ' : '') + shortDate(ymd(new Date(v.paidAt))) + (v.cardFeePaid ? ` (+${money(v.cardFeePaid)} fee covered)` : '') : v.customerSaysPaid ? ' · says they paid' : ''}</div></div>
         <span class="flex"><b>${money(v.total)}</b>${v.paid ? `${pill('p-green', 'Paid')}<button class="link" style="margin-left:8px;min-height:32px" data-a="markUnpaid" data-id="${v.id}">Undo</button>`
           : `<button class="btn btn-lime btn-sm" data-a="markPaid" data-id="${v.id}">${v.customerSaysPaid ? 'Confirm paid' : 'Mark paid'}</button><button class="btn btn-ghost btn-sm" data-a="sendInvoice" data-id="${v.id}">${v.sentAt ? 'Resend' : 'Send'}</button>`}</span></div>`).join('') : '<div class="empty">No invoices yet.</div>'}</div>
     ${state.customers.length > 1 ? `<div class="sec">Duplicate?</div>
@@ -880,6 +883,7 @@ function viewSettings() {
         <label class="btn btn-ghost full" style="margin-top:6px">Upload Zelle QR<input type="file" accept="image/*" data-change="zelleQr" class="sr"></label></div>
       ${field('venmo', 'Venmo link (business)', 'e.g. venmo.com/u/PrecisionCutLawns')}
       <label class="check"><input type="checkbox" data-setting="squareOn" ${s.squareOn ? 'checked' : ''}> Card &amp; Apple Pay through Square</label>
+      <label class="check"><input type="checkbox" data-setting="cardFeeOption" ${s.cardFeeOption !== false ? 'checked' : ''}> Let customers choose to cover the 3.3% card fee</label>
       <a class="btn btn-ghost" href="https://app.squareup.com/dashboard" target="_blank" rel="noopener">Open Square</a>
       <div class="muted small">Adds a “Pay with card / Apple Pay” button to customers’ invoices and a pay link to invoice texts. Paid invoices are marked paid by themselves. Square keeps 3.3% + 30¢ per card payment.</div>
       <div class="muted small">Customers see these with a QR code and a Pay button in their account. Venmo shows once it’s filled in.</div>`),
@@ -1101,6 +1105,13 @@ function renderSheet() {
       ${list.map((c) => `<div class="between" style="border-top:1px solid #ECEDEC;padding-top:10px"><div class="grow"><div class="b">${esc(c.name)}</div><div class="muted small">${esc({ weekly: 'Weekly', biweekly: 'Every 2 weeks', oncall: 'On call' }[c.grassPlan] || (c.grass ? '' : 'No grass plan'))}</div></div>
         <button class="btn btn-lime btn-sm" data-a="addWeek" data-cid="${c.id}">Add</button></div>`).join('') || '<div class="muted">Everyone is already on this week.</div>'}
       <button class="btn btn-ghost" data-a="closeSheet">Done</button>`;
+  } else if (sh.kind === 'payCard') {
+    const v = visitOf(sh.id), fee = withFee(v.total) - num(v.total);
+    inner = `<div class="b" style="font-size:20px">Pay by card or Apple Pay</div><div class="muted">${esc(v.desc || 'Lawn mowing')} · ${shortDate(v.date)}</div>
+      <button class="btn btn-primary" data-a="payCardGo" data-id="${v.id}" data-fee="0">Pay ${money(v.total)}</button>
+      <button class="btn btn-lime" data-a="payCardGo" data-id="${v.id}" data-fee="1">Pay ${money(withFee(v.total))} and cover the card fee</button>
+      <div class="muted small">Optional: the card company charges Jace 3.3%. Covering it (${money(fee)}) is a kind extra, never required. Zelle and Venmo have no fee.</div>
+      <button class="btn btn-ghost" data-a="closeSheet">Cancel</button>`;
   } else if (sh.kind === 'oncall') {
     const s = settings();
     const list = state.customers.filter((c) => c.active && c.grass && c.grassPlan === 'oncall' && !stopOf(`${state.week}_${c.id}`) && !mowAsked(c, state.week)).sort(byName);
@@ -1595,9 +1606,13 @@ const A = {
     renderSheet();
   },
   async custPdf(el) { const v = visitOf(el.dataset.id); await run(async () => { const f = await invoiceFile(v); const url = URL.createObjectURL(f); window.open(url, '_blank') || (location.href = url); }); },
-  async payCard(el) {
+  payCard(el) {
+    if (settings().cardFeeOption === false) return A.payCardGo(el);
+    state.sheet = { kind: 'payCard', id: el.dataset.id }; renderSheet();
+  },
+  async payCardGo(el) {
     toast('Opening secure checkout…');
-    await run(async () => { const { url } = await store.call('payLink', { visitId: el.dataset.id }); location.href = url; });
+    await run(async () => { const { url } = await store.call('payLink', { visitId: el.dataset.id, coverFee: el.dataset.fee === '1' }); location.href = url; });
   },
   custPaid(el) { if (!confirm('Let Jace know you sent the payment?')) return; store.update('visits', el.dataset.id, { customerSaysPaid: true, customerSaysPaidAt: Date.now() }); toast('Thanks! Jace will confirm.'); },
   copyZelle() { navigator.clipboard?.writeText(settings().zelle).then(() => toast('Copied Zelle number')); },

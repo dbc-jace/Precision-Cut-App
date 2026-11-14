@@ -6,7 +6,7 @@ const { onCall, onRequest, HttpsError } = require('firebase-functions/v2/https')
 const { defineSecret, defineString } = require('firebase-functions/params');
 const logger = require('firebase-functions/logger');
 const { initializeApp } = require('firebase-admin/app');
-const { getFirestore } = require('firebase-admin/firestore');
+const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 const crypto = require('crypto');
 
 initializeApp();
@@ -18,6 +18,7 @@ const SQUARE_ENV = defineString('SQUARE_ENV', { default: 'sandbox' }); // 'sandb
 const SQUARE_LOCATION_ID = defineString('SQUARE_LOCATION_ID');
 const SQUARE_WEBHOOK_URL = defineString('SQUARE_WEBHOOK_URL', { default: '' }); // exactly as entered in Square
 const APP_URL = 'https://app.precisioncutlawns.org/';
+const FEE_RATE = 0.033; // Square online card rate (plus 30¢, which isn't passed on)
 
 const api = () => (SQUARE_ENV.value() === 'production' ? 'https://connect.squareup.com' : 'https://connect.squareupsandbox.com');
 
@@ -49,15 +50,21 @@ exports.payLink = onCall({ secrets: [SQUARE_TOKEN], cors: true }, async (req) =>
   if (!allowed) throw new HttpsError('permission-denied', 'Not your invoice.');
   if (v.paid) throw new HttpsError('failed-precondition', 'This invoice is already paid.');
 
-  const cents = Math.round(Number(v.total) * 100);
-  if (!(cents >= 100)) throw new HttpsError('failed-precondition', 'Invoice total is too small for card payment.');
+  const base = Math.round(Number(v.total) * 100);
+  if (!(base >= 100)) throw new HttpsError('failed-precondition', 'Invoice total is too small for card payment.');
+  // Optional: the customer chooses to cover Square's 3.3% card fee.
+  const coverFee = !!req.data?.coverFee;
+  const feeCents = coverFee ? Math.round(base * FEE_RATE) : 0;
+  const cents = base + feeCents;
   const env = SQUARE_ENV.value();
-  if (v.square?.url && v.square.cents === cents && v.square.env === env) return { url: v.square.url };
+  const kind = coverFee ? 'fee' : 'base';
+  const saved = v.squareLinks?.[kind];
+  if (saved?.url && saved.cents === cents && saved.env === env) return { url: saved.url, cents };
 
   const data = await square('/v2/online-checkout/payment-links', {
     idempotency_key: `${visitId}-${cents}-${env}`.slice(0, 45),
     quick_pay: {
-      name: `Precision Cut Lawns · ${v.desc || 'Lawn mowing'} · ${v.invoiceNo || ''}`.slice(0, 255),
+      name: `Precision Cut Lawns · ${v.desc || 'Lawn mowing'} · ${v.invoiceNo || ''}${coverFee ? ' (incl. 3.3% card fee)' : ''}`.slice(0, 255),
       price_money: { amount: cents, currency: 'USD' },
       location_id: SQUARE_LOCATION_ID.value(),
     },
@@ -65,8 +72,11 @@ exports.payLink = onCall({ secrets: [SQUARE_TOKEN], cors: true }, async (req) =>
     payment_note: `Invoice ${v.invoiceNo || visitId}`,
   });
   const link = data.payment_link;
-  await visitSnap.ref.update({ square: { url: link.url, orderId: link.order_id, linkId: link.id, cents, env, at: Date.now() } });
-  return { url: link.url };
+  await visitSnap.ref.update({
+    [`squareLinks.${kind}`]: { url: link.url, orderId: link.order_id, linkId: link.id, cents, feeCents, env, at: Date.now() },
+    squareOrderIds: FieldValue.arrayUnion(link.order_id),
+  });
+  return { url: link.url, cents };
 });
 
 // Square signs each notification: base64(HMAC-SHA256(key, notificationUrl + body)).
@@ -86,11 +96,14 @@ exports.squareWebhook = onRequest({ secrets: [SQUARE_WEBHOOK_KEY] }, async (req,
   const p = ev.data?.object?.payment;
   if (!/^payment\.(created|updated)$/.test(ev.type || '') || !p || p.status !== 'COMPLETED' || !p.order_id) return res.status(200).send('ignored');
 
-  const q = await db.collection('visits').where('square.orderId', '==', p.order_id).limit(1).get();
+  let q = await db.collection('visits').where('squareOrderIds', 'array-contains', p.order_id).limit(1).get();
+  if (q.empty) q = await db.collection('visits').where('square.orderId', '==', p.order_id).limit(1).get(); // links made before the fee option
   if (q.empty) { logger.warn('Square payment with no matching invoice', p.order_id); return res.status(200).send('no invoice'); }
   const doc = q.docs[0];
   if (!doc.data().paid) {
-    await doc.ref.update({ paid: true, paidAt: Date.now(), paidVia: 'square', squarePaymentId: p.id, squarePaidCents: p.amount_money?.amount || null });
+    const paidCents = p.amount_money?.amount || 0, baseCents = Math.round(Number(doc.data().total) * 100);
+    await doc.ref.update({ paid: true, paidAt: Date.now(), paidVia: 'square', squarePaymentId: p.id, squarePaidCents: paidCents || null,
+      cardFeePaid: paidCents > baseCents ? (paidCents - baseCents) / 100 : 0 });
     logger.info('Invoice paid through Square', doc.id);
   }
   res.status(200).send('ok');
