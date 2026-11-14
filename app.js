@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.14.6';
+import { createStore, newId } from './store.js?v=2026.11.14.7';
 
-const APP_VERSION = '2026.11.14.6'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.14.7'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -57,7 +57,8 @@ const DEFAULTS = {
   oncallMsg: 'Hi, it\'s Jace with Precision Cut Lawns. Would you like your grass cut today?',
   invoiceMsg: 'Hi {first}, thanks for choosing Precision Cut Lawns! Your invoice for {total} is attached. Pay by Zelle to {zelle}{venmo}, or in your account: {link}',
   receiptEnabled: false,
-  squareOn: false, // Card / Apple Pay through Square (needs the Square setup done first)
+  squareOn: false,
+  snowIncluded: 3, snowPerInch: 10, // per-snow price covers this many inches; each inch over adds this much // Card / Apple Pay through Square (needs the Square setup done first)
   receiptMsg: 'Got it, thanks {first}! Received {total} for {date}. - Precision Cut Lawns',
   quoteMsg: 'Hi {first}, here\'s your quote from Precision Cut Lawns. Call or text {phone} with any questions!',
   welcomeCustomer: 'Hi {first}! Welcome to Precision Cut Lawns. Tap this link to set up your account, where you can see your schedule, skip a week, request snow removal and pay your invoices:\n\n{link}\n\nTip: tap Share, then "Add to Home Screen" to keep it handy. - Jace',
@@ -925,6 +926,8 @@ function viewSettings() {
       <div class="muted small">Adds a “Pay with card / Apple Pay” button to customers’ invoices and a pay link to invoice texts. Paid invoices are marked paid by themselves. Square keeps 3.3% + 30¢ per card payment.</div>
       <div class="muted small">Customers see these with a QR code and a Pay button in their account. Venmo shows once it’s filled in.</div>`),
     fold('business', 'Business info', esc(s.businessPhone), `${field('businessPhone', 'Phone on quotes and invoices')}${field('businessEmail', 'Email on quotes and invoices')}${field('website', 'Website link', 'Add your website')}`),
+    fold('snowprice', 'Snow pricing', `${num(s.snowIncluded)}" included · ${money(s.snowPerInch)}/inch over`, `<div class="muted small">For per-snow customers. When you mark a snow job done, type the inches; anything over the included inches is added to that invoice.</div>
+      <div class="grid2">${field('snowIncluded', 'Inches included')}${field('snowPerInch', 'Price per extra inch ($)')}</div>`),
     fold('skips', 'Skips', `Deadline: ${esc(deadlineText(weekStart(new Date())))}`, `<div class="muted small">Customers get 1 free skip a month. They can skip until:</div>
       <div class="grid2"><label class="f"><span class="lbl">Day</span><select class="inp" data-setting="skipDay">${DAYS.map((d, i) => `<option value="${i}" ${Number(s.skipDay) === i ? 'selected' : ''}>${d}</option>`).join('')}</select></label>
         <label class="f"><span class="lbl">Time</span><input class="inp" type="time" data-setting="skipTime" value="${esc(s.skipTime)}"></label></div>`),
@@ -1111,10 +1114,13 @@ function renderSheet() {
   let inner = '';
   if (sh.kind === 'done') {
     const c = cust(sh.cid);
-    const total = num(sh.price) + sh.sel.reduce((a, id) => a + num((state.addons.find((x) => x.id === id) || {}).price), 0);
+    sh.inchOn = sh.type === 'snow' && c?.snowPlan !== 'seasonal' && num(settings().snowPerInch) > 0;
+    const total = sheetTotal(sh), st = settings();
     inner = `<div><div class="b" style="font-size:20px">${esc(c.name)}</div><div class="muted">${esc(sh.desc)}</div></div>
       <label class="f"><span class="lbl">Price this time ($)</span><input class="inp" id="sh_price" inputmode="decimal" value="${esc(sh.price)}" data-input="sheetPrice"></label>
       <div class="muted small">Normal rate is ${money(sh.base)}. Changing it here only affects this invoice.</div>
+      ${sh.inchOn ? `<label class="f"><span class="lbl">Inches of snow</span><input class="inp" id="sh_inches" inputmode="decimal" value="${esc(sh.inches || '')}" placeholder="e.g. 5" data-input="sheetPrice"></label>
+        <div class="muted small">Includes ${num(st.snowIncluded)}". Each inch over adds ${money(st.snowPerInch)}.<span id="sh_extra">${snowExtra(sh.inches) ? ` Extra: ${money(snowExtra(sh.inches))}` : ''}</span></div>` : ''}
       ${sh.kind === 'done' && sh.canDesc ? `<label class="f"><span class="lbl">Description</span><input class="inp" id="sh_desc" value="${esc(sh.desc)}"></label>` : ''}
       <div class="lbl">Add-ons</div>
       ${state.addons.length ? `<div class="flex wrap">${[...state.addons].sort(byName).map((a) => `<button class="chip ${sh.sel.includes(a.id) ? 'on' : ''}" data-a="sheetAddon" data-id="${a.id}">${esc(a.name)} · ${money(a.price)}</button>`).join('')}</div>` : '<div class="muted small">No add-ons yet. Create them in Settings.</div>'}
@@ -1209,6 +1215,9 @@ function addSnowStop(cid, date) {
   store.set('stops', `snow_${date}_${cid}${visit > 1 ? '_' + visit : ''}`, { customerId: cid, type: 'snow', status: 'scheduled', date, visit, weekId: weekStart(parseYmd(date)) });
   return true;
 }
+// Extra charge for deep snow on per-snow jobs: inches over the included amount × the per-inch price.
+const snowExtra = (inches) => { const s = settings(); return Math.max(0, Math.ceil(num(inches) - num(s.snowIncluded))) * num(s.snowPerInch); };
+const sheetTotal = (sh) => num(sh.price) + (sh.inchOn ? snowExtra(sh.inches) : 0) + sh.sel.reduce((a, id) => a + num((state.addons.find((x) => x.id === id) || {}).price), 0);
 const snowDesc = (stop) => 'Snow removal' + ((stop?.visit || 1) > 1 ? ` - visit ${stop.visit}` : '');
 const openText = (title, body, phone, link) => { state.sheet = { kind: 'text', title, body, phone, link }; renderSheet(); };
 function makeInvite(role, customerId, forName = '', fresh = false) {
@@ -1327,7 +1336,12 @@ const A = {
   async confirmDone(el) {
     const sh = state.sheet;
     const addons = sh.sel.map((id) => state.addons.find((a) => a.id === id)).filter(Boolean).map((a) => ({ name: a.name, price: num(a.price) }));
-    const desc = sh.canDesc ? (val('sh_desc') || sh.desc) : sh.desc;
+    let desc = sh.canDesc ? (val('sh_desc') || sh.desc) : sh.desc;
+    if (sh.inchOn && num(sh.inches) > 0) {
+      const st = settings(), over = Math.max(0, Math.ceil(num(sh.inches) - num(st.snowIncluded)));
+      desc += ` (${num(sh.inches)}")`;
+      if (over) addons.push({ name: `Extra snow: ${over}" over ${num(st.snowIncluded)}" × ${money(st.snowPerInch)}`, price: over * num(st.snowPerInch) });
+    }
     const v = createVisit({ customerId: sh.cid, type: sh.type, price: val('sh_price'), addons, desc, stopId: sh.stopId, date: sh.date || (sh.type === 'snow' ? state.snowDate : today()) });
     if (sh.stopId) store.update('stops', sh.stopId, { ...sh.stopData, visitId: v.id });
     state.sheet = null; renderSheet();
@@ -1785,8 +1799,10 @@ document.addEventListener('input', (ev) => {
     state.q = el.value; const pos = el.selectionStart; render();
     const s = document.getElementById('search'); s.focus(); s.setSelectionRange(pos, pos);
   } else if (el.dataset.input === 'sheetPrice') {
-    state.sheet.price = el.value;
-    document.getElementById('sh_total').textContent = money(num(el.value) + state.sheet.sel.reduce((a, id) => a + num((state.addons.find((x) => x.id === id) || {}).price), 0));
+    const sh = state.sheet;
+    if (el.id === 'sh_inches') sh.inches = el.value; else sh.price = el.value;
+    document.getElementById('sh_total').textContent = money(sheetTotal(sh));
+    const ex = document.getElementById('sh_extra'); if (ex) ex.textContent = snowExtra(sh.inches) ? ` Extra: ${money(snowExtra(sh.inches))}` : '';
   } else if (el.dataset.cmsg) {
     clearTimeout(cmsgTimer); cmsgTimer = setTimeout(saveCustomMsgs, 600);
   } else if (el.dataset.setting && el.tagName !== 'SELECT' && el.type !== 'checkbox') {
