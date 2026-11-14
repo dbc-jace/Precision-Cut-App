@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.14.8';
+import { createStore, newId } from './store.js?v=2026.11.14.9';
 
-const APP_VERSION = '2026.11.14.8'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.14.9'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -23,7 +23,17 @@ const withFee = (total) => Math.round(num(total) * 100 * (1 + CARD_FEE)) / 100;
 const fill = (t, v) => String(t || '').replace(/\{(\w+)\}/g, (m, k) => (k in v ? v[k] : m));
 const appLink = () => location.origin + location.pathname;
 const isApple = /iPhone|iPad|iPod|Macintosh/.test(navigator.userAgent);
-const smsHref = (phone, body) => `sms:${phone ? '+1' + digits10(phone) : ''}${isApple ? '&' : '?'}body=${encodeURIComponent(body)}`;
+// Every phone number in a field like "847-774-4491, 312-925-4888".
+const allPhones = (p) => (String(p || '').match(/\+?1?[\s.(-]*\d{3}[\s.)-]*\d{3}[\s.-]*\d{4}/g) || []).map(digits10);
+// One number opens a normal text; several open a group text (iPhone and Android write it differently).
+const smsHref = (phone, body) => {
+  let nums = allPhones(phone); if (!nums.length && digits10(phone)) nums = [digits10(phone)];
+  const b = encodeURIComponent(body || '');
+  if (nums.length > 1) return isApple ? `sms:/open?addresses=${nums.map((n) => '+1' + n).join(',')}&body=${b}` : `sms:${nums.map((n) => '+1' + n).join(',')}?body=${b}`;
+  return `sms:${nums.length ? '+1' + nums[0] : ''}${isApple ? '&' : '?'}body=${b}`;
+};
+// Who a customer's texts go to: the first number, or all of them when "Text all numbers" is on.
+const textTo = (c) => (c?.phone ? (c.textAll ? allPhones(c.phone).join(', ') : firstPhone(c.phone)) : '');
 
 /* ---------- dates (weeks start Monday) ---------- */
 const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -346,7 +356,7 @@ async function sendInvoice(v) {
     }
     catch (e) { console.error(e); toast('Couldn’t make the card pay link. Sending without it.'); }
   }
-  const sent = await sharePdf(await invoiceFile(v), text, c.phone);
+  const sent = await sharePdf(await invoiceFile(v), text, textTo(c));
   if (sent) { await store.update('visits', v.id, { sentAt: Date.now() }); toast('Invoice ready to send'); }
 }
 function newInvoiceNo() { const d = new Date(); return `PC-${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`; }
@@ -670,7 +680,7 @@ function viewRoute() {
         ${r.status !== 'done' ? `<div class="flex wrap">
           ${r.type === 'snow' ? `<button class="btn btn-lime btn-sm" data-a="reqToSnow" data-id="${r.id}">Add to snow day</button>` : ''}
           ${r.type === 'mow' ? `<button class="btn btn-lime btn-sm" data-a="reqToWeek" data-id="${r.id}">Add to this week</button>` : ''}
-          ${c?.phone ? `<a class="btn btn-ghost btn-sm" href="${smsHref(c.phone, '')}">Text back</a>` : ''}
+          ${c?.phone ? `<a class="btn btn-ghost btn-sm" href="${smsHref(textTo(c), '')}">Text back</a>` : ''}
           <button class="btn btn-ghost btn-sm" data-a="reqDone" data-id="${r.id}">Mark handled</button>
           <button class="link danger" style="min-height:32px;margin-left:auto" data-a="reqDel" data-id="${r.id}">Delete</button></div>`
           : `<div class="between"><span class="muted small">Handled</span><button class="link danger" style="min-height:32px" data-a="reqDel" data-id="${r.id}">Delete</button></div>`}</div>`;
@@ -708,7 +718,7 @@ function viewCustomer() {
   const grassPlan = { weekly: 'Weekly', biweekly: 'Every 2 weeks', oncall: 'On call ("Grass today?" text)' }[c.grassPlan];
   return `<button class="link" data-a="backToList">← All customers</button>
     <div class="card"><div class="between"><div><div class="b" style="font-size:20px">${esc(c.name)}</div>${c.name2 ? `<div class="muted">and ${esc(c.name2)}</div>` : ''}</div>${admin ? '<button class="btn btn-ghost btn-sm" data-a="editCust">Edit</button>' : ''}</div>
-      <div><div class="lbl">Phone</div><div>${c.phone ? `<a href="tel:+1${firstPhone(c.phone)}">${esc(c.phone)}</a> · <a href="${smsHref(c.phone, '')}">Text</a>` : '—'}</div></div>
+      <div><div class="lbl">Phone</div><div>${c.phone ? `<a href="tel:+1${firstPhone(c.phone)}">${esc(c.phone)}</a> · <a href="${smsHref(textTo(c), '')}">Text${c.textAll && allPhones(c.phone).length > 1 ? ' all' : ''}</a>` : '—'}</div>${c.textAll && allPhones(c.phone).length > 1 ? '<div class="muted small">Texts go to all numbers as a group text.</div>' : ''}</div>
       ${admin && c.phone ? `<button class="btn btn-ghost" data-a="pickMsg" data-cid="${c.id}">Send a saved message</button>` : ''}
       ${admin && userForCustomer(c.id) ? `<button class="btn btn-ghost" data-a="openReply" data-cid="${c.id}">Message in the app</button>` : ''}
       <div><div class="lbl">Address</div><div>${c.address ? `<a href="https://maps.apple.com/?q=${encodeURIComponent(c.address)}">${esc(c.address)}</a>` : '—'}</div></div>
@@ -752,7 +762,8 @@ function viewCustomerEdit() {
     <div class="card">
       <label class="f"><span class="lbl">Name</span><input class="inp" id="c_name" value="${esc(c.name)}" autocomplete="off"></label>
       <label class="f"><span class="lbl">Second person (optional)</span><input class="inp" id="c_name2" value="${esc(c.name2 || '')}" autocomplete="off" placeholder="Spouse, son, daughter…"></label>
-      <label class="f"><span class="lbl">Phone number(s)</span><input class="inp" id="c_phone" value="${esc(c.phone)}" inputmode="tel" placeholder="First number gets the texts"></label>
+      <label class="f"><span class="lbl">Phone number(s)</span><input class="inp" id="c_phone" value="${esc(c.phone)}" inputmode="tel" placeholder="Separate numbers with a comma"></label>
+      <label class="check"><input type="checkbox" id="c_textAll" ${c.textAll ? 'checked' : ''}> Text all numbers (group text). Off: only the first number gets texts.</label>
       <label class="f"><span class="lbl">Address</span><input class="inp" id="c_address" value="${esc(c.address)}"></label>
       <label class="f"><span class="lbl">Email (for their app login)</span><input class="inp" id="c_email" type="email" value="${esc(c.email)}" autocapitalize="off"></label>
       <label class="f"><span class="lbl">Deck height</span><input class="inp" id="c_deck" value="${esc(c.deck)}" placeholder='e.g. 3.5"'></label>
@@ -1134,7 +1145,7 @@ function renderSheet() {
     inner = `<div class="b" style="font-size:20px">Weekly reminders</div><div class="muted small">Tap each one. Messages opens with the reminder filled in, then tap send and come back.</div>
       ${rows.map((r) => { const body = fill(s.reminderMsg, { first: first(r.c.name), week: weekLabel(state.week), deadline: deadlineText(state.week), link: appLink() + '#skip', phone: s.businessPhone });
         return `<div class="between" style="border-top:1px solid #ECEDEC;padding-top:10px"><div><div class="b">${esc(r.c.name)}</div>${r.stop?.reminded ? '<div class="muted small">✓ Sent</div>' : ''}</div>
-          ${r.c.phone ? `<a class="btn ${r.stop?.reminded ? 'btn-ghost' : 'btn-primary'} btn-sm" href="${smsHref(r.c.phone, body)}" data-a="reminded" data-id="${r.id}" data-cid="${r.c.id}">${r.stop?.reminded ? 'Again' : 'Text'}</a>` : '<span class="muted small">No phone</span>'}</div>`; }).join('')}
+          ${r.c.phone ? `<a class="btn ${r.stop?.reminded ? 'btn-ghost' : 'btn-primary'} btn-sm" href="${smsHref(textTo(r.c), body)}" data-a="reminded" data-id="${r.id}" data-cid="${r.c.id}">${r.stop?.reminded ? 'Again' : 'Text'}</a>` : '<span class="muted small">No phone</span>'}</div>`; }).join('')}
       <button class="btn btn-ghost" data-a="closeSheet">Close</button>`;
   } else if (sh.kind === 'reply') {
     const r = sh.id && state.requests.find((x) => x.id === sh.id), c = cust(r?.customerId || sh.cid), admin = isAdmin();
@@ -1163,7 +1174,7 @@ function renderSheet() {
     const list = state.customers.filter((c) => c.active && c.grass && c.grassPlan === 'oncall' && !stopOf(`${state.week}_${c.id}`) && !mowAsked(c, state.week)).sort(byName);
     inner = `<div class="b" style="font-size:20px">On-call customers</div><div class="muted small">Text each one, then tap “Yes” for anyone who wants a mow. It adds them to this week.</div>
       ${list.map((c) => `<div class="between" style="border-top:1px solid #ECEDEC;padding-top:10px"><div class="b grow">${esc(c.name)}</div>
-        ${c.phone ? `<a class="btn btn-ghost btn-sm" href="${smsHref(c.phone, s.oncallMsg)}">Text</a>` : ''}<button class="btn btn-lime btn-sm" data-a="oncallYes" data-cid="${c.id}">Yes</button></div>`).join('') || '<div class="muted">Everyone’s been added this week.</div>'}
+        ${c.phone ? `<a class="btn btn-ghost btn-sm" href="${smsHref(textTo(c), s.oncallMsg)}">Text</a>` : ''}<button class="btn btn-lime btn-sm" data-a="oncallYes" data-cid="${c.id}">Yes</button></div>`).join('') || '<div class="muted">Everyone’s been added this week.</div>'}
       <button class="btn btn-ghost" data-a="closeSheet">Close</button>`;
   } else if (sh.kind === 'text') {
     inner = `<div class="b" style="font-size:20px">${esc(sh.title)}</div><div class="card" style="white-space:pre-line;overflow-wrap:anywhere;background:#F4F6F2">${esc(sh.body)}</div>
@@ -1196,7 +1207,7 @@ function renderSheet() {
       <div class="muted small">Tap Text for each one. Messages opens with it filled in${inv ? ' (with their own sign-up link)' : ''}. Tap send and come back. ${sent} of ${rows.length} sent.</div>
       <label class="check"><input type="checkbox" data-change="bulkSkip" ${sh.skipMembers ? 'checked' : ''}> Only customers without an app account</label>
       ${rows.map((c) => `<div class="between" style="border-top:1px solid #ECEDEC;padding-top:10px"><div class="grow"><div class="b">${esc(c.name)}</div>${sh.sent[c.id] ? '<div class="muted small">✓ Sent</div>' : userForCustomer(c.id) ? '<div class="muted small">Has an account</div>' : ''}</div>
-        ${c.phone ? `<a class="btn ${sh.sent[c.id] ? 'btn-ghost' : 'btn-primary'} btn-sm" href="${smsHref(c.phone, fillMsg(m.body, c, sh.pending))}" data-a="bulkSent" data-cid="${c.id}">${sh.sent[c.id] ? 'Again' : 'Text'}</a>` : '<span class="muted small">No phone</span>'}</div>`).join('') || '<div class="muted">Everyone already has an account.</div>'}
+        ${c.phone ? `<a class="btn ${sh.sent[c.id] ? 'btn-ghost' : 'btn-primary'} btn-sm" href="${smsHref(textTo(c), fillMsg(m.body, c, sh.pending))}" data-a="bulkSent" data-cid="${c.id}">${sh.sent[c.id] ? 'Again' : 'Text'}</a>` : '<span class="muted small">No phone</span>'}</div>`).join('') || '<div class="muted">Everyone already has an account.</div>'}
       <button class="btn btn-ghost" data-a="bulkPick">Pick a different message</button><button class="btn btn-ghost" data-a="closeSheet">Close</button>`;
   } else if (sh.kind === 'setLock') {
     inner = `<div class="b" style="font-size:20px">Passcode lock</div>
@@ -1241,7 +1252,7 @@ function sendInvite(i) {
   const tpl = welcomeTpl(i.role === 'crew' ? 'welcomeCrew' : 'welcomeCustomer');
   const who = i.label ? first(i.label) : c ? first(c.name) : 'there';
   openText(c ? 'Invite for ' + who : i.role === 'crew' ? 'Crew invite link' : 'Customer invite link',
-    fill(tpl, { first: who, link: inviteLink(i.id), email: '' }), c?.phone || '', inviteLink(i.id));
+    fill(tpl, { first: who, link: inviteLink(i.id), email: '' }), textTo(c), inviteLink(i.id));
 }
 
 /* ---------- actions ---------- */
@@ -1282,7 +1293,7 @@ const A = {
       saveInvite(c?.id || '', sh.pending, label);
     }
     state.sheet = null; renderSheet();
-    location.href = smsHref(c?.phone || sh.contactPhone || '', body);
+    location.href = smsHref(textTo(c) || sh.contactPhone || '', body);
   },
   async pickContact() {
     const sh = state.sheet;
@@ -1394,7 +1405,7 @@ const A = {
       const c = cust(sh.cid);
       store.add('requests', { customerId: c.id, customerName: c.name, type: 'message', fromAdmin: true, text: '', replies: [msg], at, status: 'done' });
     }
-    const phone = admin && cust(r?.customerId || sh.cid)?.phone;
+    const phone = admin && textTo(cust(r?.customerId || sh.cid));
     state.sheet = null; renderSheet(); toast(admin ? 'Sent. They’ll see it in their app.' : 'Sent to Jace');
     if (phone) { openText('Message sent in the app', `Hi ${first(cust(r?.customerId || sh.cid)?.name)}, I sent you a message in the Precision Cut app: ${appLink()}`, phone); state.sheet.title = 'Sent in the app. Text them too?'; renderSheet(); }
   },
@@ -1418,7 +1429,7 @@ const A = {
     const name = val('c_name').trim();
     if (!name) return toast('Name is needed');
     const existing = cust(state.custId);
-    const data = { name, name2: val('c_name2').trim(), phone: val('c_phone'), address: val('c_address'), email: val('c_email').trim().toLowerCase(), deck: val('c_deck'), active: checked('c_active'),
+    const data = { name, name2: val('c_name2').trim(), phone: val('c_phone'), textAll: checked('c_textAll'), address: val('c_address'), email: val('c_email').trim().toLowerCase(), deck: val('c_deck'), active: checked('c_active'),
       grass: checked('c_grass'), grassPlan: val('c_grassPlan'), snow: checked('c_snow'), snowPlan: val('c_snowPlan') };
     // Read every field before writing: a write can redraw the screen.
     const pricing = { grass: num(val('c_pGrass')), snow: num(val('c_pSnow')), season: num(val('c_pSeason')) };
@@ -1503,7 +1514,7 @@ const A = {
   reinvite(el) {
     const u = state.users.find((x) => x.id === el.dataset.email); const c = u?.customerId && cust(u.customerId);
     const tpl = u.role === 'crew' ? welcomeTpl('welcomeCrew') : welcomeTpl('welcomeCustomer');
-    openText('Welcome text', fill(tpl, { first: first(u.name), link: appLink(), email: u.id }), c?.phone);
+    openText('Welcome text', fill(tpl, { first: first(u.name), link: appLink(), email: u.id }), textTo(c));
   },
   async checkUpdate() { await checkForUpdate(); toast(upd.latest === APP_VERSION ? 'You have the newest version' : upd.latest ? 'Update available' : 'Could not check. Are you online?'); },
   async updateNow() {
@@ -1532,7 +1543,7 @@ const A = {
     await store.update('visits', v.id, { paid: true, paidAt: Date.now(), paidVia: v.customerSaysPaid ? 'zelle-venmo' : 'cash' });
     toast('Marked paid');
     const s = settings(), c = cust(v.customerId);
-    if (s.receiptEnabled && c?.phone) openText('Receipt for ' + first(v.customerName), fill(s.receiptMsg, { first: first(v.customerName), total: money(v.total), date: shortDate(v.date) }), c.phone);
+    if (s.receiptEnabled && c?.phone) openText('Receipt for ' + first(v.customerName), fill(s.receiptMsg, { first: first(v.customerName), total: money(v.total), date: shortDate(v.date) }), textTo(c));
   },
   markUnpaid(el) { store.update('visits', el.dataset.id, { paid: false, paidAt: null, paidVia: null, payGroup: null }); },
   async markAllPaid(el) {
