@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.14.7';
+import { createStore, newId } from './store.js?v=2026.11.14.8';
 
-const APP_VERSION = '2026.11.14.7'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.14.8'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -1119,8 +1119,8 @@ function renderSheet() {
     inner = `<div><div class="b" style="font-size:20px">${esc(c.name)}</div><div class="muted">${esc(sh.desc)}</div></div>
       <label class="f"><span class="lbl">Price this time ($)</span><input class="inp" id="sh_price" inputmode="decimal" value="${esc(sh.price)}" data-input="sheetPrice"></label>
       <div class="muted small">Normal rate is ${money(sh.base)}. Changing it here only affects this invoice.</div>
-      ${sh.inchOn ? `<label class="f"><span class="lbl">Inches of snow</span><input class="inp" id="sh_inches" inputmode="decimal" value="${esc(sh.inches || '')}" placeholder="e.g. 5" data-input="sheetPrice"></label>
-        <div class="muted small">Includes ${num(st.snowIncluded)}". Each inch over adds ${money(st.snowPerInch)}.<span id="sh_extra">${snowExtra(sh.inches) ? ` Extra: ${money(snowExtra(sh.inches))}` : ''}</span></div>` : ''}
+      ${sh.inchOn ? `<label class="f"><span class="lbl">Inches of snow</span><input class="inp" id="sh_inches" type="number" inputmode="numeric" step="1" min="0" pattern="[0-9]*" value="${esc(sh.inches || '')}" placeholder="Whole inches, e.g. 5" data-input="sheetPrice"></label>
+        <div class="muted small">Includes ${wholeInches(st.snowIncluded)}". Each inch over adds ${money(st.snowPerInch)}.<span id="sh_extra">${snowExtra(sh.inches) ? ` Extra: ${money(snowExtra(sh.inches))}` : ''}</span></div>` : ''}
       ${sh.kind === 'done' && sh.canDesc ? `<label class="f"><span class="lbl">Description</span><input class="inp" id="sh_desc" value="${esc(sh.desc)}"></label>` : ''}
       <div class="lbl">Add-ons</div>
       ${state.addons.length ? `<div class="flex wrap">${[...state.addons].sort(byName).map((a) => `<button class="chip ${sh.sel.includes(a.id) ? 'on' : ''}" data-a="sheetAddon" data-id="${a.id}">${esc(a.name)} · ${money(a.price)}</button>`).join('')}</div>` : '<div class="muted small">No add-ons yet. Create them in Settings.</div>'}
@@ -1216,7 +1216,8 @@ function addSnowStop(cid, date) {
   return true;
 }
 // Extra charge for deep snow on per-snow jobs: inches over the included amount × the per-inch price.
-const snowExtra = (inches) => { const s = settings(); return Math.max(0, Math.ceil(num(inches) - num(s.snowIncluded))) * num(s.snowPerInch); };
+const wholeInches = (v) => Math.max(0, Math.round(num(v)));
+const snowExtra = (inches) => { const s = settings(); return Math.max(0, wholeInches(inches) - wholeInches(s.snowIncluded)) * num(s.snowPerInch); };
 const sheetTotal = (sh) => num(sh.price) + (sh.inchOn ? snowExtra(sh.inches) : 0) + sh.sel.reduce((a, id) => a + num((state.addons.find((x) => x.id === id) || {}).price), 0);
 const snowDesc = (stop) => 'Snow removal' + ((stop?.visit || 1) > 1 ? ` - visit ${stop.visit}` : '');
 const openText = (title, body, phone, link) => { state.sheet = { kind: 'text', title, body, phone, link }; renderSheet(); };
@@ -1337,10 +1338,10 @@ const A = {
     const sh = state.sheet;
     const addons = sh.sel.map((id) => state.addons.find((a) => a.id === id)).filter(Boolean).map((a) => ({ name: a.name, price: num(a.price) }));
     let desc = sh.canDesc ? (val('sh_desc') || sh.desc) : sh.desc;
-    if (sh.inchOn && num(sh.inches) > 0) {
-      const st = settings(), over = Math.max(0, Math.ceil(num(sh.inches) - num(st.snowIncluded)));
-      desc += ` (${num(sh.inches)}")`;
-      if (over) addons.push({ name: `Extra snow: ${over}" over ${num(st.snowIncluded)}" × ${money(st.snowPerInch)}`, price: over * num(st.snowPerInch) });
+    if (sh.inchOn && wholeInches(sh.inches) > 0) {
+      const st = settings(), inches = wholeInches(sh.inches), over = Math.max(0, inches - wholeInches(st.snowIncluded));
+      desc += ` (${inches}")`;
+      if (over) addons.push({ name: `Extra snow: ${over}" over ${wholeInches(st.snowIncluded)}" × ${money(st.snowPerInch)}`, price: over * num(st.snowPerInch) });
     }
     const v = createVisit({ customerId: sh.cid, type: sh.type, price: val('sh_price'), addons, desc, stopId: sh.stopId, date: sh.date || (sh.type === 'snow' ? state.snowDate : today()) });
     if (sh.stopId) store.update('stops', sh.stopId, { ...sh.stopData, visitId: v.id });
