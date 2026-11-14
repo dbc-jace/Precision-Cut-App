@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.14.9';
+import { createStore, newId } from './store.js?v=2026.11.14.10';
 
-const APP_VERSION = '2026.11.14.9'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.14.10'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -622,6 +622,34 @@ function stopCard(r, kind) {
     ${(c.deck || note) ? `<div class="muted small">${c.deck ? 'Deck ' + esc(c.deck) : ''}${c.deck && note ? ' · ' : ''}${esc(note)}</div>` : ''}
     ${action}</div>`;
 }
+function snowCard(r) {
+  const { c, stop } = r, admin = isAdmin(), ch = snowCharge(c, stop), v = stop.visitId && visitOf(stop.visitId), note = noteOf(c.id);
+  const counter = (k, label, n, sub) => `<div class="between" style="gap:8px"><div class="grow"><div>${esc(label)}</div>${sub ? `<div class="muted small">${sub}</div>` : ''}</div>
+    <div class="flex" style="gap:6px;align-items:center"><button class="btn btn-ghost btn-sm" style="min-width:40px" data-a="snowCount" data-id="${stop.id}" data-k="${k}" data-d="-1" aria-label="Less ${esc(label)}">−</button>
+    <b style="min-width:22px;text-align:center">${n}</b><button class="btn btn-ghost btn-sm" style="min-width:40px" data-a="snowCount" data-id="${stop.id}" data-k="${k}" data-d="1" aria-label="More ${esc(label)}">+</button></div></div>`;
+  let status = '';
+  if (admin) {
+    if (v && v.paid) status = `<div class="okbar">Billed ${money(v.total)} · Paid</div>`;
+    else if (v && Math.abs(num(v.total) - ch.total) > 0.004) status = `<div class="between warnbar" style="padding:4px 4px 4px 12px"><span>Invoice is ${money(v.total)}, now ${money(ch.total)}</span><button class="btn btn-primary btn-sm" data-a="billSnow" data-id="${stop.id}">Update invoice</button></div>`;
+    else if (v) status = `<div class="between okbar" style="padding:4px 4px 4px 12px"><span>Billed ${money(v.total)}${v.sentAt ? ' · sent' : ''}</span><button class="btn btn-primary btn-sm" data-a="sendInvoice" data-id="${v.id}">${v.sentAt ? 'Resend' : 'Send invoice'}</button></div>`;
+    else if (ch.total > 0) status = `<button class="btn btn-primary" data-a="billSnow" data-id="${stop.id}">Bill ${money(ch.total)}</button>`;
+    else if (passesOf(stop).length) status = `<div class="okbar">Done${c.snowPlan === 'seasonal' ? ' (seasonal, nothing extra to bill)' : ''}</div>`;
+  }
+  return `<div class="card ${passesOf(stop).length ? 'done' : ''}" style="gap:8px">
+    <div class="between"><button class="plain grow" data-a="openCust" data-id="${c.id}"><div class="b" style="font-size:16px">${esc(c.name)}</div></button>${pill('p-blue', c.snowPlan === 'seasonal' ? 'Seasonal' : 'Per snow ' + money(priceOf(c.id).snow))}</div>
+    ${c.address ? `<a href="https://maps.apple.com/?q=${encodeURIComponent(c.address)}" class="muted">${esc(c.address)}</a>` : ''}
+    ${note ? `<div class="muted small">${esc(note)}</div>` : ''}
+    <div class="lbl">Visits</div>
+    ${passesOf(stop).map((inches, i) => `<div class="between" style="gap:8px"><span>Visit ${i + 1}</span>
+      <span class="flex" style="gap:6px;align-items:center"><input class="inp" style="width:72px;min-height:36px" type="number" inputmode="numeric" step="1" min="0" pattern="[0-9]*" value="${inches}" data-change="passInches" data-id="${stop.id}" data-i="${i}" aria-label="Inches on visit ${i + 1}"><span class="muted">in.</span>
+      <button class="link danger" style="min-height:32px" data-a="snowPassDel" data-id="${stop.id}" data-i="${i}" aria-label="Remove visit ${i + 1}">✕</button></span></div>`).join('') || '<div class="muted small">No visits yet.</div>'}
+    <button class="btn btn-lime btn-sm" data-a="snowPassAdd" data-id="${stop.id}">+ Add visit${dayInchesOf(stop.date) !== '' ? ` (${dayInchesOf(stop.date)}")` : ''}</button>
+    ${snowAddons().map((a) => counter(a.id, a.name, num(stop.addonCounts?.[a.id]), `${money(a.price)} each`)).join('')}
+    ${admin ? `<div class="between b" style="border-top:1px solid #ECEDEC;padding-top:8px"><span>${esc(ch.desc)}</span><span>${money(ch.total)}</span></div>
+      ${ch.lines.map((l) => `<div class="between muted small"><span>${esc(l.name)}</span><span>${money(l.price)}</span></div>`).join('')}` : ''}
+    ${status}
+    ${!v && !passesOf(stop).length ? `<button class="link danger" style="min-height:32px" data-a="snowRemove" data-id="${stop.id}">Not going today (remove)</button>` : ''}</div>`;
+}
 function viewRoute() {
   const seg = (k, l) => `<button class="${state.routeSeg === k ? 'on' : ''}" data-a="routeSeg" data-v="${k}">${l}</button>`;
   const openReq = state.requests.filter((r) => r.status !== 'done');
@@ -651,13 +679,21 @@ function viewRoute() {
       ${skipped.length ? `<div class="sec">Skipped</div>${skipped.map((r) => stopCard(r, 'grass')).join('')}` : ''}
       ${!rows.length && inSeason ? '<div class="card empty">Nothing on the route this week.</div>' : ''}`;
   } else if (state.routeSeg === 'snow') {
-    const rows = state.stops.filter((s) => s.type === 'snow' && s.date === state.snowDate && cust(s.customerId))
-      .map((s) => ({ c: cust(s.customerId), stop: s, id: s.id, status: s.status })).sort((a, b) => byName(a.c, b.c) || (a.stop.visit || 1) - (b.stop.visit || 1));
+    // One card per customer for the day (older extra-visit stops are folded into the first one).
+    const seen = new Set();
+    const rows = state.stops.filter((s) => s.type === 'snow' && s.date === state.snowDate && cust(s.customerId)).sort((a, b) => (a.visit || 1) - (b.visit || 1))
+      .filter((s) => !seen.has(s.customerId) && seen.add(s.customerId)).map((s) => ({ c: cust(s.customerId), stop: s })).sort((a, b) => byName(a.c, b.c));
     const snowReq = openReq.filter((r) => r.type === 'snow');
+    const signedUp = state.customers.filter((x) => x.active && x.snow).length;
+    const inches = dayInchesOf(state.snowDate);
+    const toBill = rows.filter((r) => { const ch = snowCharge(r.c, r.stop), v = r.stop.visitId && visitOf(r.stop.visitId); return ch.total > 0 && (!v || (!v.paid && Math.abs(num(v.total) - ch.total) > 0.004)); });
     body = `<label class="f"><span class="lbl">Snow day</span><input class="inp" type="date" value="${state.snowDate}" data-change="snowDate"></label>
-      ${isAdmin() ? `<div class="card"><div class="b">Start snow day</div><div class="muted small">Adds every seasonal snow customer${snowReq.length ? ` and the ${snowReq.length} open snow request${snowReq.length === 1 ? '' : 's'}` : ''} to this day's list.</div>
+      ${isAdmin() ? `<div class="card"><div class="b">Start snow day</div><div class="muted small">Adds everyone signed up for snow (${signedUp})${snowReq.length ? ` and the ${snowReq.length} open snow request${snowReq.length === 1 ? '' : 's'}` : ''}. Already on the list stays as is.</div>
         <button class="btn btn-primary" data-a="startSnow">Start snow day</button></div>` : ''}
-      ${rows.length ? rows.map((r) => stopCard(r, 'snow')).join('') : '<div class="card empty">No snow stops for this day yet.</div>'}`;
+      ${rows.length ? `<div class="card"><label class="f"><span class="lbl">Inches (fills in each new visit)</span><input class="inp" type="number" inputmode="numeric" step="1" min="0" pattern="[0-9]*" value="${inches}" placeholder="Whole inches" data-change="snowInches"></label>
+        <div class="muted small">Per snow: each visit is the base price for up to ${wholeInches(settings().snowIncluded)}"; each inch over on that visit adds ${money(settings().snowPerInch)}. Change any visit's inches on the card.</div></div>` : ''}
+      ${rows.length ? rows.map(snowCard).join('') : '<div class="card empty">No snow stops for this day yet.</div>'}
+      ${isAdmin() && toBill.length ? `<button class="btn btn-primary" data-a="billSnowAll">Bill everyone (${toBill.length}) · ${money(toBill.reduce((a, r) => a + snowCharge(r.c, r.stop).total, 0))}</button>` : ''}`;
   } else {
     const all = [...state.requests].sort((a, b) => (a.status === 'done') - (b.status === 'done') || lastAt(b) - lastAt(a)).slice(0, 60);
     const handled = state.requests.filter((r) => r.status === 'done').length;
@@ -1219,12 +1255,51 @@ function renderSheet() {
 }
 // Snow stops: one per visit, so a driveway can be cleared (and billed) more than once a day.
 const snowStops = (cid, date) => state.stops.filter((s) => s.type === 'snow' && s.customerId === cid && s.date === date);
+function savePasses(st, passes) {
+  store.update('stops', st.id, { passes, visits: passes.length, status: passes.length ? 'done' : 'scheduled',
+    ...(passes.length && !st.doneAt ? { doneAt: Date.now(), doneByName: state.account?.name || '' } : {}) });
+}
+// Make or update this snow day's invoice for one customer. Paid invoices are never changed.
+async function billSnowStop(stopId) {
+  const st = stopOf(stopId), c = st && cust(st.customerId); if (!c) return false;
+  const ch = snowCharge(c, st); if (!(ch.total > 0)) return false;
+  const old = st.visitId && visitOf(st.visitId);
+  if (old && old.paid) return false;
+  if (old) {
+    if (Math.abs(num(old.total) - ch.total) < 0.005 && old.desc === ch.desc) return false;
+    await store.update('visits', old.id, { desc: ch.desc, price: ch.base, addons: ch.lines, total: ch.total, customerName: c.name });
+    return true;
+  }
+  const v = createVisit({ customerId: c.id, type: 'snow', price: ch.base, addons: ch.lines, desc: ch.desc, stopId, date: st.date });
+  await store.update('stops', stopId, { visitId: v.id });
+  return true;
+}
 function addSnowStop(cid, date) {
   const existing = snowStops(cid, date);
   if (existing.some((s) => s.status === 'scheduled')) return false; // already waiting on the list
   const visit = existing.length + 1;
   store.set('stops', `snow_${date}_${cid}${visit > 1 ? '_' + visit : ''}`, { customerId: cid, type: 'snow', status: 'scheduled', date, visit, weekId: weekStart(parseYmd(date)) });
   return true;
+}
+// ----- Snow day: one card per customer per day with inches, visits and salt counts -----
+const dayStopId = (date, cid) => `snow_${date}_${cid}`;
+const snowAddons = () => [...state.addons].filter((a) => /salt|ice|snow/i.test(a.name)).sort(byName);
+const dayInchesOf = (date) => { const s = state.stops.find((x) => x.type === 'snow' && x.date === date && x.inches != null && x.inches !== ''); return s ? wholeInches(s.inches) : ''; };
+// Each visit that day with its inches, e.g. [3, 9]. (Older stops only had a visit count.)
+const passesOf = (stop) => Array.isArray(stop?.passes) ? stop.passes.map(wholeInches) : Array(num(stop?.visits)).fill(wholeInches(stop?.inches));
+// What a snow-day card bills. Per snow: EACH visit is the base price (covers up to the included inches)
+// plus each inch over on that visit. Seasonal: visits are covered; only salt is billed. Salt: price × count.
+function snowCharge(c, stop) {
+  const st = settings(), passes = passesOf(stop), perSnow = c?.snowPlan !== 'seasonal', inc = wholeInches(st.snowIncluded);
+  const lines = []; let base = 0;
+  if (perSnow && passes.length) {
+    base = passes.length * num(priceOf(c.id).snow);
+    passes.forEach((inches, i) => { const over = Math.max(0, inches - inc); if (over && num(st.snowPerInch)) lines.push({ name: `Visit ${i + 1}: ${inches}" (${over}" over ${inc}" × ${money(st.snowPerInch)})`, price: over * num(st.snowPerInch) }); });
+  }
+  for (const a of snowAddons()) { const n = num(stop?.addonCounts?.[a.id]); if (n > 0) lines.push({ name: `${a.name} × ${n}`, price: n * num(a.price) }); }
+  const desc = `Snow removal · ${passes.length} visit${passes.length === 1 ? '' : 's'}${passes.length ? ` (${passes.map((x) => x + '"').join(', ')})` : ''}${perSnow ? '' : ' · seasonal'}`;
+  const total = Math.round((base + lines.reduce((a, l) => a + l.price, 0)) * 100) / 100;
+  return { base, lines, desc, total };
 }
 // Extra charge for deep snow on per-snow jobs: inches over the included amount × the per-inch price.
 const wholeInches = (v) => Math.max(0, Math.round(num(v)));
@@ -1371,17 +1446,38 @@ const A = {
     toast('Added to this week'); renderSheet(); },
   oncallYes(el) { store.set('stops', `${state.week}_${el.dataset.cid}`, { customerId: el.dataset.cid, weekId: state.week, type: 'grass', status: 'scheduled' }); toast('Added to this week'); },
   startSnow() {
-    const date = state.snowDate;
+    const date = state.snowDate, inches = dayInchesOf(date);
     let n = 0;
-    // Seasonal customers once per snow day (use "Clean again" for repeat visits).
-    for (const c of state.customers.filter((x) => x.active && x.snow && x.snowPlan === 'seasonal')) {
-      if (!snowStops(c.id, date).length && addSnowStop(c.id, date)) n++;
-    }
-    for (const r of state.requests.filter((x) => x.type === 'snow' && x.status !== 'done')) {
-      if (addSnowStop(r.customerId, date)) n++;
-      store.update('requests', r.id, { status: 'done', handledAt: Date.now() });
+    // Everyone signed up for snow (per snow and seasonal), plus anyone who asked in the app.
+    const ids = new Set(state.customers.filter((x) => x.active && x.snow).map((x) => x.id));
+    state.requests.filter((x) => x.type === 'snow' && x.status !== 'done').forEach((r) => { ids.add(r.customerId); store.update('requests', r.id, { status: 'done', handledAt: Date.now() }); });
+    for (const cid of ids) {
+      if (!cust(cid) || snowStops(cid, date).length) continue;
+      store.set('stops', dayStopId(date, cid), { customerId: cid, type: 'snow', status: 'scheduled', date, visit: 1, visits: 0, addonCounts: {}, weekId: weekStart(parseYmd(date)), ...(inches !== '' ? { inches } : {}) });
+      n++;
     }
     toast(n ? `${n} added to the snow list` : 'Everyone is already on the list');
+  },
+  snowCount(el) {
+    const st = stopOf(el.dataset.id); if (!st) return;
+    const k = el.dataset.k, d = Number(el.dataset.d);
+    {
+      const n = Math.max(0, num(st.addonCounts?.[k]) + d);
+      store.update('stops', st.id, { addonCounts: { ...(st.addonCounts || {}), [k]: n } });
+    }
+  },
+  snowPassAdd(el) {
+    const st = stopOf(el.dataset.id); if (!st) return;
+    const d = dayInchesOf(st.date);
+    savePasses(st, [...passesOf(st), d === '' ? 0 : d]);
+  },
+  snowPassDel(el) { const st = stopOf(el.dataset.id); if (!st) return; const p = passesOf(st); p.splice(Number(el.dataset.i), 1); savePasses(st, p); },
+  snowRemove(el) { if (!confirm('Take them off today\'s snow list?')) return; store.remove('stops', el.dataset.id); },
+  async billSnow(el) { await run(() => billSnowStop(el.dataset.id)); toast('Invoice ready. Send it from the card or Money.'); },
+  async billSnowAll() {
+    const ids = state.stops.filter((s) => s.type === 'snow' && s.date === state.snowDate).map((s) => s.id);
+    let n = 0; for (const id of ids) if (await billSnowStop(id)) n++;
+    toast(n ? `${n} invoice${n === 1 ? '' : 's'} ready. Send them from Money.` : 'Nothing new to bill');
   },
   snowAgain(el) { addSnowStop(el.dataset.cid, state.snowDate); toast('Added another visit'); },
   reqToSnow(el) { state.routeSeg = 'snow'; const r = state.requests.find((x) => x.id === el.dataset.id); const date = state.snowDate;
@@ -1829,6 +1925,8 @@ document.addEventListener('change', async (ev) => {
   if (k === 'composeTo') { const sh = state.sheet; sh.label = document.getElementById('cm_label')?.value || sh.label; sh.cid = el.value; sh.body = fillMsg(sh.tpl, cust(sh.cid), sh.pending); renderSheet(); }
   if (k === 'bulkSkip') { state.sheet.skipMembers = el.checked; renderSheet(); }
   if (k === 'snowDate') { state.snowDate = el.value || today(); render(); }
+  if (k === 'snowInches') { const v = el.value === '' ? '' : wholeInches(el.value); state.stops.filter((x) => x.type === 'snow' && x.date === state.snowDate).forEach((x) => store.update('stops', x.id, { inches: v })); }
+  if (k === 'passInches') { const st = stopOf(el.dataset.id); if (st) { const p = passesOf(st); p[Number(el.dataset.i)] = wholeInches(el.value); savePasses(st, p); } }
   if (k === 'demoAs') { localStorage.setItem('pc_demo_as', el.value); location.reload(); }
   if (k === 'zelleQr' && el.files[0]) {
     const img = await createImageBitmap(el.files[0]);
