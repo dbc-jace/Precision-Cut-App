@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.14.4';
+import { createStore, newId } from './store.js?v=2026.11.14.5';
 
-const APP_VERSION = '2026.11.14.4'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.14.5'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -263,12 +263,45 @@ async function buildPdf(kind, data) {
   if (pages > 1) for (let i = 1; i <= pages; i++) { doc.setPage(i); font('normal', 8, muted); doc.text(`Page ${i} of ${pages}`, R, 30, { align: 'right' }); }
   return doc.output('blob');
 }
-const visitLines = (v) => [{ desc: v.desc || 'Lawn mowing', amount: v.price }, ...(v.addons || []).map((a) => ({ desc: a.name, amount: a.price }))];
+// What a charge was for: Jace's own wording wins; plain mowing says the customer's plan.
+const GRASS_LABEL = { weekly: 'Weekly lawn care', biweekly: 'Every-2-weeks lawn care', oncall: 'On-call lawn care' };
+const grassLabel = (c) => GRASS_LABEL[c?.grassPlan] || 'Lawn care';
+function chargeLabel(v) {
+  if (v.desc && v.desc !== 'Lawn mowing') return v.desc;
+  if (v.type === 'snow') return 'Snow removal';
+  return grassLabel(cust(v.customerId));
+}
+// How a payment came in.
+const PAID_LABEL = { square: 'Card payment', cash: 'Cash payment', 'zelle-venmo': 'Zelle/Venmo payment', zelle: 'Zelle payment', venmo: 'Venmo payment', check: 'Check payment' };
+const paidLabel = (via) => PAID_LABEL[via] || 'Payment';
+// Running balance for one customer: every visit (+) and payment (−), oldest first, with the balance after each.
+function ledgerFor(cid) {
+  const vs = state.visits.filter((v) => v.customerId === cid);
+  const rows = vs.map((v) => ({ date: v.date, sort: `${v.date}0${v.createdAt || 0}`, desc: chargeLabel(v), amt: num(v.total), id: v.id }));
+  const groups = {};
+  vs.filter((v) => v.paid && v.paidAt).forEach((v) => {
+    const g = (groups[v.payGroup || `${v.paidAt}_${v.paidVia || ''}`] ??= { paidAt: v.paidAt, via: v.paidVia, amt: 0, fee: 0 });
+    g.amt += num(v.total); g.fee += num(v.cardFeePaid);
+  });
+  Object.values(groups).forEach((g) => { const d = ymd(new Date(g.paidAt)); rows.push({ date: d, sort: `${d}1${g.paidAt}`, desc: paidLabel(g.via), amt: -g.amt, fee: g.fee, pay: true }); });
+  rows.sort((a, b) => a.sort.localeCompare(b.sort));
+  let bal = 0; rows.forEach((r) => { bal = Math.round((bal + r.amt) * 100) / 100; r.bal = bal; });
+  const unpaid = vs.filter((v) => !v.paid).sort((a, b) => a.date.localeCompare(b.date));
+  return { rows, unpaid, owe: Math.round(unpaid.reduce((a, v) => a + num(v.total), 0) * 100) / 100 };
+}
+const ledgerHtml = (rows, pdf) => `<div class="list">${rows.map((r) => `<div class="line"><div class="grow"><div>${shortDate(r.date)} · ${esc(r.desc)}${r.fee ? ` <span class="muted small">(+${money(r.fee)} fee covered)</span>` : ''}</div>
+    <div class="muted small">Balance ${money(r.bal)}${pdf && r.id ? ` · <button class="link" style="min-height:28px" data-a="custPdf" data-id="${r.id}">PDF</button>` : ''}</div></div>
+    <b style="${r.pay ? 'color:#1D4A22' : ''}">${r.pay ? '−' : '+'}${money(Math.abs(r.amt))}</b></div>`).join('')}</div>`;
+const visitLines = (v) => [{ desc: chargeLabel(v), amount: v.price }, ...(v.addons || []).map((a) => ({ desc: a.name, amount: a.price }))];
 async function invoiceFile(v) {
   const c = cust(v.customerId) || {};
   const s = settings();
   const meta = [['Invoice #', v.invoiceNo], ['Date', longDate(v.date)], v.paid ? ['Status', 'PAID'] : ['Due', 'Upon receipt']];
-  const blob = await buildPdf('invoice', { meta, name: v.customerName, to: [c.address, c.phone], lines: visitLines(v), totalLabel: v.paid ? 'Total paid' : 'Total due', total: v.total, paid: !!v.paid,
+  const dated = (x) => visitLines(x).map((l, i) => ({ ...l, desc: i === 0 ? `${shortDate(x.date)} · ${l.desc}` : `   + ${l.desc}` }));
+  const earlier = v.paid ? [] : state.visits.filter((x) => x.customerId === v.customerId && !x.paid && x.id !== v.id).sort((a, b) => a.date.localeCompare(b.date));
+  const lines = [...earlier.map((x) => ({ desc: `${shortDate(x.date)} · ${chargeLabel(x)} (earlier, unpaid)`, amount: x.total })), ...dated(v)];
+  const total = Math.round((num(v.total) + earlier.reduce((a, x) => a + num(x.total), 0)) * 100) / 100;
+  const blob = await buildPdf('invoice', { meta, name: v.customerName, to: [c.address, c.phone], lines, totalLabel: v.paid ? 'Total paid' : earlier.length ? 'Balance due' : 'Total due', total, paid: !!v.paid,
     terms: v.paid ? 'Paid in full. Thank you!' : `Due upon receipt. Pay by Zelle to ${s.zelle}${s.venmo ? ' or by Venmo' : ''}.` });
   return new File([blob], `Precision Cut Invoice ${v.invoiceNo}.pdf`, { type: 'application/pdf' });
 }
@@ -302,11 +335,13 @@ async function sendInvoice(v) {
   const s = settings();
   const c = cust(v.customerId) || {};
   let text = fill(s.invoiceMsg, { first: first(v.customerName), total: money(v.total), zelle: s.zelle, venmo: s.venmo ? ' or Venmo ' + s.venmo : '', link: appLink(), phone: s.businessPhone });
-  if (s.squareOn && store.call) {
+  const L = ledgerFor(v.customerId);
+  if (!v.paid && L.owe > num(v.total) + 0.004) text += `\n\nYour balance is now ${money(L.owe)} (${L.unpaid.map((x) => shortDate(x.date)).join(', ')}).`;
+  if (s.squareOn && store.call && !v.paid && L.owe > 0) {
     try {
-      const { url } = await store.call('payLink', { visitId: v.id });
-      text += `\n\nPay by card or Apple Pay: ${url}`;
-      if (s.cardFeeOption !== false) { const f = await store.call('payLink', { visitId: v.id, coverFee: true }); text += `\nOr ${money(withFee(v.total))} to cover the 3.3% card fee (optional): ${f.url}`; }
+      const { url } = await store.call('payBalance', { customerId: v.customerId });
+      text += `\n\nPay ${money(L.owe)} by card or Apple Pay: ${url}`;
+      if (s.cardFeeOption !== false) { const f = await store.call('payBalance', { customerId: v.customerId, coverFee: true }); text += `\nOr ${money(withFee(L.owe))} to cover the 3.3% card fee (optional): ${f.url}`; }
     }
     catch (e) { console.error(e); toast('Couldn’t make the card pay link. Sending without it.'); }
   }
@@ -698,13 +733,15 @@ function viewCustomer() {
     <div class="sec">Invoices</div>
     ${owed.length ? `<div class="card"><div class="between"><div><div class="b">Owes ${money(owed.reduce((a, v) => a + num(v.total), 0))}</div><div class="muted small">${owed.length} unpaid invoice${owed.length === 1 ? '' : 's'}</div></div>
       ${owed.length > 1 ? `<button class="btn btn-lime btn-sm" data-a="markAllPaid" data-cid="${c.id}">Mark all paid</button>` : ''}</div></div>` : ''}
-    <div class="card list">${visits.length ? visits.map((v) => `<div class="line"><div class="grow"><div>${shortDate(v.date)} · ${esc(v.desc || 'Lawn mowing')}</div><div class="muted small">${esc(v.invoiceNo)}${v.paid && v.paidAt ? ' · paid ' + (v.paidVia === 'square' ? 'by card ' : '') + shortDate(ymd(new Date(v.paidAt))) + (v.cardFeePaid ? ` (+${money(v.cardFeePaid)} fee covered)` : '') : v.customerSaysPaid ? ' · says they paid' : ''}</div></div>
+    ${visits.length ? `<details class="card"><summary class="b">Balance history</summary>${ledgerHtml(ledgerFor(c.id).rows.slice().reverse(), true)}</details>` : ''}
+    <div class="card list">${visits.length ? visits.map((v) => `<div class="line"><div class="grow"><div>${shortDate(v.date)} · ${esc(chargeLabel(v))}</div><div class="muted small">${esc(v.invoiceNo)}${v.paid && v.paidAt ? ' · ' + paidLabel(v.paidVia).toLowerCase() + ' ' + shortDate(ymd(new Date(v.paidAt))) + (v.cardFeePaid ? ` (+${money(v.cardFeePaid)} fee covered)` : '') : v.customerSaysPaid ? ' · says they paid' : ''}</div></div>
         <span class="flex"><b>${money(v.total)}</b>${v.paid ? `${pill('p-green', 'Paid')}<button class="link" style="margin-left:8px;min-height:32px" data-a="markUnpaid" data-id="${v.id}">Undo</button>`
           : `<button class="btn btn-lime btn-sm" data-a="markPaid" data-id="${v.id}">${v.customerSaysPaid ? 'Confirm paid' : 'Mark paid'}</button><button class="btn btn-ghost btn-sm" data-a="sendInvoice" data-id="${v.id}">${v.sentAt ? 'Resend' : 'Send'}</button>`}</span></div>`).join('') : '<div class="empty">No invoices yet.</div>'}</div>
     ${state.customers.length > 1 ? `<div class="sec">Duplicate?</div>
     <div class="card"><div class="muted small">If this person is in here twice, pick the other one. Their logins, invoices, route stops and messages move to ${esc(first(c.name))}, then the other one is deleted.</div>
       <label class="f"><span class="lbl">Merge into ${esc(c.name)}</span><select class="inp" id="merge_pick"><option value="">Pick the duplicate…</option>${[...state.customers].filter((x) => x.id !== c.id).sort(byName).map((x) => `<option value="${x.id}">${esc(bothNames(x))}${x.email ? ' · ' + esc(x.email) : ''}</option>`).join('')}</select></label>
-      <button class="btn btn-ghost" data-a="mergeCust">Merge</button></div>` : ''}` : ''}`;
+      <button class="btn btn-ghost" data-a="mergeCust">Merge</button></div>` : ''}
+    <button class="btn btn-danger" style="margin-top:8px" data-a="deleteCust">Delete ${esc(first(c.name))} completely</button>` : ''}`;
 }
 function viewCustomerEdit() {
   const c = cust(state.custId) || { name: '', phone: '', address: '', email: '', deck: '', active: true, grass: true, grassPlan: 'weekly', snow: false, snowPlan: 'perSnow' };
@@ -756,7 +793,7 @@ function viewMoney() {
     body = `${toBill.length ? `<div class="sec">Done but not billed</div>${toBill.map((s) => { const c = cust(s.customerId); return `<div class="card row"><div class="grow"><div class="b">${esc(c?.name || '')}</div><div class="muted">${s.type === 'snow' ? 'Snow' : 'Mow'} · ${shortDate(s.date || s.weekId)}${s.doneByName ? ' · ' + esc(s.doneByName) : ''}</div></div>
         <button class="btn btn-primary btn-sm" data-a="billStop" data-id="${s.id}" data-cid="${s.customerId}" data-kind="${s.type}">Make invoice</button></div>`; }).join('')}` : ''}
       <div class="card row"><div class="grow"><div class="lbl">Total owed</div><div class="big">${money(unpaid.reduce((a, v) => a + v.total, 0))}</div></div><div class="muted">${unpaid.length} invoice${unpaid.length === 1 ? '' : 's'}</div></div>
-      ${unpaid.length ? unpaid.map((v) => `<div class="card" style="gap:8px"><div class="between"><div><div class="b">${esc(v.customerName)}</div><div class="muted">${shortDate(v.date)} · ${esc(v.desc || 'Lawn mowing')}</div></div><div class="b">${money(v.total)}</div></div>
+      ${unpaid.length ? unpaid.map((v) => `<div class="card" style="gap:8px"><div class="between"><div><div class="b">${esc(v.customerName)}</div><div class="muted">${shortDate(v.date)} · ${esc(chargeLabel(v))}</div></div><div class="b">${money(v.total)}</div></div>
         ${v.customerSaysPaid ? `<div class="warnbar">${esc(first(v.customerName))} says they paid${v.customerSaysPaidAt ? ' on ' + shortDate(ymd(new Date(v.customerSaysPaidAt))) : ''}. Check Zelle/Venmo, then confirm.</div>` : ''}
         <div class="flex"><button class="btn btn-lime grow" data-a="markPaid" data-id="${v.id}">${v.customerSaysPaid ? 'Confirm paid' : 'Mark paid'}</button>
           <button class="btn btn-ghost" data-a="sendInvoice" data-id="${v.id}">${v.sentAt ? 'Resend' : 'Send'}</button>
@@ -948,6 +985,7 @@ function renderCustomerHome() {
   const canSkip = status === 'scheduled' && beforeDeadline && skipsUsed < 1 && c.grassPlan !== 'oncall';
   const unpaid = state.visits.filter((v) => !v.paid).sort((a, b) => a.date.localeCompare(b.date));
   const paid = state.visits.filter((v) => v.paid).sort((a, b) => b.date.localeCompare(a.date));
+  const L = ledgerFor(c.id);
   const openSnow = state.requests.find((r) => r.type === 'snow' && r.status !== 'done');
   const openMow = state.requests.find((r) => r.type === 'mow' && r.status !== 'done');
   const myMsgs = state.requests.filter((r) => !r.custHidden).sort((a, b) => lastAt(b) - lastAt(a));
@@ -985,10 +1023,12 @@ function renderCustomerHome() {
     <main class="no-tabs">
       ${newMsgs ? `<a class="okbar" href="#msgs" style="text-decoration:none">You have ${newMsgs} new message${newMsgs === 1 ? '' : 's'} from Jace. Tap to read.</a>` : ''}
       ${grassCard}${snowCard}
-      ${unpaid.length ? `<div class="sec">To pay</div>${unpaid.map((v) => `<div class="card"><div class="between"><div><div class="b">${esc(v.desc || 'Lawn mowing')}</div><div class="muted">${shortDate(v.date)} · ${esc(v.invoiceNo)}</div></div><div class="big">${money(v.total)}</div></div>
-          ${s.squareOn ? `<button class="btn btn-primary" data-a="payCard" data-id="${v.id}">Pay with card / Apple Pay</button>` : ''}
-          <button class="btn btn-ghost" data-a="custPdf" data-id="${v.id}">View invoice (PDF)</button>
-          ${v.customerSaysPaid ? '<div class="okbar">Thanks! I’ll confirm once it comes through.</div>' : `<button class="btn btn-primary" data-a="custPaid" data-id="${v.id}">I’ve paid this</button>`}</div>`).join('')}` : '<div class="card"><div class="okbar">You’re all paid up. Thank you!</div></div>'}
+      <div class="sec">Your balance</div>
+      <div class="card"><div class="between"><div class="b">Balance</div><div class="big">${money(L.owe)}</div></div>
+        ${L.owe > 0 ? `${s.squareOn ? `<button class="btn btn-primary" data-a="payCard" data-cid="${c.id}">Pay ${money(L.owe)} with card / Apple Pay</button>` : ''}
+          ${L.unpaid.every((v) => v.customerSaysPaid) ? '<div class="okbar">Thanks! I’ll confirm once it comes through.</div>' : `<button class="btn btn-ghost" data-a="custPaid" data-cid="${c.id}">I’ve paid my balance (Zelle / Venmo)</button>`}`
+          : '<div class="okbar">You’re all paid up. Thank you!</div>'}
+        ${L.rows.length ? `<div class="lbl" style="margin-top:6px">History</div>${ledgerHtml(L.rows.slice(-12).reverse(), true)}` : ''}</div>
       <div class="sec">How to pay</div>
       <div class="card">
         ${venmoUrl ? `<a class="btn btn-primary" href="${esc(venmoUrl)}" target="_blank" rel="noopener">Pay with Venmo</a><div class="qr">${qrSvg(venmoUrl)}</div>` : ''}
@@ -1004,7 +1044,7 @@ function renderCustomerHome() {
       <div class="card"><div class="b">Message Jace</div><label class="f"><span class="sr">Message</span><textarea class="inp" id="m_text" placeholder="Questions, gate code changes, anything…"></textarea></label>
         <div class="flex"><button class="btn btn-primary grow" data-a="custRequest" data-type="message">Send in the app</button><a class="btn btn-ghost" href="${smsHref(s.businessPhone, '')}">Text instead</a></div></div>
       ${paid.length ? `<button class="link" data-a="togglePaid">${state.showPaidHistory ? 'Hide' : 'Show'} paid invoices (${paid.length})</button>
-        ${state.showPaidHistory ? `<div class="card list">${paid.map((v) => `<div class="line"><div class="grow"><div>${shortDate(v.date)} · ${esc(v.desc || 'Lawn mowing')}</div></div><b>${money(v.total)}</b><button class="link" style="margin-left:10px;min-height:32px" data-a="custPdf" data-id="${v.id}">PDF</button></div>`).join('')}</div>` : ''}` : ''}
+        ${state.showPaidHistory ? `<div class="card list">${paid.map((v) => `<div class="line"><div class="grow"><div>${shortDate(v.date)} · ${esc(chargeLabel(v))}</div></div><b>${money(v.total)}</b><button class="link" style="margin-left:10px;min-height:32px" data-a="custPdf" data-id="${v.id}">PDF</button></div>`).join('')}</div>` : ''}` : ''}
       <div class="bizfoot"><img src="logo-full.jpg" alt="Precision Cut Lawns">
         <div class="motto">EVERY LINE. EVERY EDGE. EVERY TIME.</div>
         <div class="muted small">${[s.businessPhone ? `<a href="tel:${esc(s.businessPhone)}">${esc(s.businessPhone)}</a>` : '', s.businessEmail ? `<a href="mailto:${esc(s.businessEmail)}">${esc(s.businessEmail)}</a>` : '', s.website ? esc(s.website) : ''].filter(Boolean).join(' · ')}</div></div>
@@ -1106,10 +1146,10 @@ function renderSheet() {
         <button class="btn btn-lime btn-sm" data-a="addWeek" data-cid="${c.id}">Add</button></div>`).join('') || '<div class="muted">Everyone is already on this week.</div>'}
       <button class="btn btn-ghost" data-a="closeSheet">Done</button>`;
   } else if (sh.kind === 'payCard') {
-    const v = visitOf(sh.id), fee = withFee(v.total) - num(v.total);
-    inner = `<div class="b" style="font-size:20px">Pay by card or Apple Pay</div><div class="muted">${esc(v.desc || 'Lawn mowing')} · ${shortDate(v.date)}</div>
-      <button class="btn btn-primary" data-a="payCardGo" data-id="${v.id}" data-fee="0">Pay ${money(v.total)}</button>
-      <button class="btn btn-lime" data-a="payCardGo" data-id="${v.id}" data-fee="1">Pay ${money(withFee(v.total))} and cover the card fee</button>
+    const L = ledgerFor(sh.cid), fee = Math.round((withFee(L.owe) - L.owe) * 100) / 100;
+    inner = `<div class="b" style="font-size:20px">Pay by card or Apple Pay</div><div class="muted">Your balance: ${L.unpaid.length} visit${L.unpaid.length === 1 ? '' : 's'}, ${L.unpaid.map((v) => shortDate(v.date)).join(', ')}</div>
+      <button class="btn btn-primary" data-a="payCardGo" data-cid="${sh.cid}" data-fee="0">Pay ${money(L.owe)}</button>
+      <button class="btn btn-lime" data-a="payCardGo" data-cid="${sh.cid}" data-fee="1">Pay ${money(withFee(L.owe))} and cover the card fee</button>
       <div class="muted small">Optional: the card company charges Jace 3.3%. Covering it (${money(fee)}) is a kind extra, never required. Zelle and Venmo have no fee.</div>
       <button class="btn btn-ghost" data-a="closeSheet">Cancel</button>`;
   } else if (sh.kind === 'oncall') {
@@ -1264,14 +1304,14 @@ const A = {
     if (kind === 'grass') closeMowReqs(c.id);
     if (!isAdmin() || seasonal) { store.update('stops', el.dataset.id, stopData); toast(seasonal ? 'Done (seasonal, no bill)' : 'Marked done'); return; }
     const base = kind === 'snow' ? num(priceOf(c.id).snow) : num(priceOf(c.id).grass);
-    state.sheet = { kind: 'done', cid: c.id, stopId: el.dataset.id, stopData, type: kind, base, price: String(base), sel: [], desc: kind === 'snow' ? snowDesc(stopOf(el.dataset.id)) : 'Lawn mowing' };
+    state.sheet = { kind: 'done', cid: c.id, stopId: el.dataset.id, stopData, type: kind, base, price: String(base), sel: [], desc: kind === 'snow' ? snowDesc(stopOf(el.dataset.id)) : grassLabel(c) };
     renderSheet();
   },
   billStop(el) {
     const c = cust(el.dataset.cid), kind = el.dataset.kind;
     const base = kind === 'snow' ? num(priceOf(c.id).snow) : num(priceOf(c.id).grass);
     const stop = stopOf(el.dataset.id);
-    state.sheet = { kind: 'done', cid: c.id, stopId: el.dataset.id, stopData: { status: 'done' }, type: kind, base, price: String(base), sel: [], desc: kind === 'snow' ? snowDesc(stop) : 'Lawn mowing', date: stop?.date || (stop?.doneAt ? ymd(new Date(stop.doneAt)) : today()) };
+    state.sheet = { kind: 'done', cid: c.id, stopId: el.dataset.id, stopData: { status: 'done' }, type: kind, base, price: String(base), sel: [], desc: kind === 'snow' ? snowDesc(stop) : grassLabel(c), date: stop?.date || (stop?.doneAt ? ymd(new Date(stop.doneAt)) : today()) };
     renderSheet();
   },
   otherWork(el) {
@@ -1418,11 +1458,16 @@ const A = {
     });
   },
   async deleteCust() {
-    const c = cust(state.custId);
-    if (!confirm(`Delete ${c.name}? Their past invoices stay in your money totals.`)) return;
+    const c = cust(state.custId); if (!c) return;
+    const logins = usersForCustomer(c.id);
+    const upcoming = state.stops.filter((x) => x.customerId === c.id && x.status === 'scheduled');
+    const invites = state.invites.filter((i) => i.customerId === c.id && !i.usedBy);
+    if (!confirm(`Delete ${bothNames(c)} completely?\n\nRemoves their customer record, prices and notes, ${logins.length} app login${logins.length === 1 ? '' : 's'}, ${upcoming.length} upcoming route stop${upcoming.length === 1 ? '' : 's'} and ${invites.length} unused invite link${invites.length === 1 ? '' : 's'}.\n\nTheir past invoices stay in your money totals (you need them for taxes). This can't be undone.`)) return;
     ['customers', 'pricing', 'notes'].forEach((n) => store.remove(n, c.id));
-    const u = userForCustomer(c.id); if (u) store.remove('users', u.id);
-    state.custId = null; state.editing = false; render();
+    logins.forEach((u) => store.remove('users', u.id));
+    upcoming.forEach((x) => store.remove('stops', x.id));
+    invites.forEach((i) => store.remove('invites', i.id));
+    state.custId = null; state.editing = false; toast(`${c.name} deleted`); render();
   },
   // Invite links (no email needed up front)
   inviteCustomer(el) { makeInvite('customer', el.dataset.cid); },
@@ -1469,18 +1514,18 @@ const A = {
   // Money
   async markPaid(el) {
     const v = visitOf(el.dataset.id);
-    await store.update('visits', v.id, { paid: true, paidAt: Date.now() });
+    await store.update('visits', v.id, { paid: true, paidAt: Date.now(), paidVia: v.customerSaysPaid ? 'zelle-venmo' : 'cash' });
     toast('Marked paid');
     const s = settings(), c = cust(v.customerId);
     if (s.receiptEnabled && c?.phone) openText('Receipt for ' + first(v.customerName), fill(s.receiptMsg, { first: first(v.customerName), total: money(v.total), date: shortDate(v.date) }), c.phone);
   },
-  markUnpaid(el) { store.update('visits', el.dataset.id, { paid: false, paidAt: null }); },
+  markUnpaid(el) { store.update('visits', el.dataset.id, { paid: false, paidAt: null, paidVia: null, payGroup: null }); },
   async markAllPaid(el) {
     const c = cust(el.dataset.cid), owed = state.visits.filter((v) => v.customerId === c.id && !v.paid);
     const total = owed.reduce((a, v) => a + num(v.total), 0);
     if (!confirm(`Mark all ${owed.length} of ${first(c.name)}'s invoices paid (${money(total)})?`)) return;
     const at = Date.now();
-    for (const v of owed) await store.update('visits', v.id, { paid: true, paidAt: at });
+    for (const v of owed) await store.update('visits', v.id, { paid: true, paidAt: at, paidVia: v.customerSaysPaid ? 'zelle-venmo' : 'cash' });
     toast(`Marked ${owed.length} paid`);
   },
   delVisit(el) {
@@ -1498,7 +1543,7 @@ const A = {
   delExpense(el) { if (confirm('Delete this expense?')) store.remove('expenses', el.dataset.id); },
   exportCsv() {
     const rows = [['Type', 'Date', 'Who / What', 'Category', 'Amount', 'Invoice', 'Paid on']];
-    state.visits.forEach((v) => rows.push(['Income', v.date, v.customerName, v.desc || 'Lawn mowing', v.total, v.invoiceNo, v.paidAt ? ymd(new Date(v.paidAt)) : 'UNPAID']));
+    state.visits.forEach((v) => rows.push(['Income', v.date, v.customerName, chargeLabel(v), v.total, v.invoiceNo, v.paidAt ? ymd(new Date(v.paidAt)) + ' ' + paidLabel(v.paidVia) : 'UNPAID']));
     state.expenses.forEach((e) => rows.push(['Expense', e.date, e.desc, e.category, -num(e.amount), '', '']));
     download(`precision-cut-money-${today()}.csv`, rows.map((r) => r.map((x) => `"${String(x ?? '').replace(/"/g, '""')}"`).join(',')).join('\n'), 'text/csv');
   },
@@ -1608,13 +1653,18 @@ const A = {
   async custPdf(el) { const v = visitOf(el.dataset.id); await run(async () => { const f = await invoiceFile(v); const url = URL.createObjectURL(f); window.open(url, '_blank') || (location.href = url); }); },
   payCard(el) {
     if (settings().cardFeeOption === false) return A.payCardGo(el);
-    state.sheet = { kind: 'payCard', id: el.dataset.id }; renderSheet();
+    state.sheet = { kind: 'payCard', cid: el.dataset.cid }; renderSheet();
   },
   async payCardGo(el) {
     toast('Opening secure checkout…');
-    await run(async () => { const { url } = await store.call('payLink', { visitId: el.dataset.id, coverFee: el.dataset.fee === '1' }); location.href = url; });
+    await run(async () => { const { url } = await store.call('payBalance', { customerId: el.dataset.cid, coverFee: el.dataset.fee === '1' }); location.href = url; });
   },
-  custPaid(el) { if (!confirm('Let Jace know you sent the payment?')) return; store.update('visits', el.dataset.id, { customerSaysPaid: true, customerSaysPaidAt: Date.now() }); toast('Thanks! Jace will confirm.'); },
+  custPaid(el) {
+    if (!confirm('Let Jace know you sent the payment?')) return;
+    const at = Date.now();
+    state.visits.filter((v) => v.customerId === el.dataset.cid && !v.paid && !v.customerSaysPaid).forEach((v) => store.update('visits', v.id, { customerSaysPaid: true, customerSaysPaidAt: at }));
+    toast('Thanks! Jace will confirm.');
+  },
   copyZelle() { navigator.clipboard?.writeText(settings().zelle).then(() => toast('Copied Zelle number')); },
   togglePaid() { state.showPaidHistory = !state.showPaidHistory; render(); },
 
