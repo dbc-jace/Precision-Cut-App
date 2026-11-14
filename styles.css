@@ -128,3 +128,12 @@ details.fold.nested > .fold-body { padding: 0 12px 12px; }
 .bubble { background: #F4F6F2; border-radius: 12px; padding: 8px 12px; margin-right: 32px; }
 .bubble.me { background: #E3F0D2; margin: 0 0 0 32px; }
 .card.unread { border-color: #7DBE2A; box-shadow: 0 0 0 1px #7DBE2A; }
+
+/* Money overview: three stat cards */
+.kpis { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.kpi { background: #fff; border: 1px solid var(--line); border-radius: 16px; padding: 14px 6px 12px; text-align: center; display: flex; flex-direction: column; gap: 4px; }
+.kpi .lbl { margin: 0; }
+.kpi .n { font-size: 20px; font-weight: 800; font-variant-numeric: tabular-nums; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.kpi.in .n { color: var(--pine); }
+.kpi.profit { background: var(--forest); border-color: var(--forest); color: #fff; }
+.kpi.profit .lbl { color: #C9D6CD; }

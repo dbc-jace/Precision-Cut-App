@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.14.11';
+import { createStore, newId } from './store.js?v=2026.11.14.12';
 
-const APP_VERSION = '2026.11.14.11'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.14.12'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -85,7 +85,7 @@ const state = {
   customers: [], notes: [], pricing: [], stops: [], visits: [], requests: [], expenses: [], addons: [], quotes: [], users: [], invites: [], pending: [], settingsDoc: null,
   waiting: null,
   tab: 'route', routeSeg: 'grass', week: weekStart(new Date()), snowDate: today(),
-  custId: null, editing: false, q: '', moneyTab: 'overview', quoteId: null, quoteSel: [], quoteLines: [{ d: '', a: '' }], quoteEdit: false, openFolds: new Set(),
+  custId: null, editing: false, q: '', moneyTab: 'overview', moneyPeriod: 'month', quoteId: null, quoteSel: [], quoteLines: [{ d: '', a: '' }], quoteEdit: false, openFolds: new Set(),
   sheet: null, locked: false, showPaidHistory: false,
 };
 let store;
@@ -826,21 +826,34 @@ function viewMoney() {
   const sumEx = (from) => state.expenses.filter((e) => e.date >= from).reduce((a, e) => a + num(e.amount), 0);
   const now = new Date(), wk = weekStart(now), mo = ymd(new Date(now.getFullYear(), now.getMonth(), 1)), yr = `${now.getFullYear()}-01-01`;
   const unpaid = state.visits.filter((v) => !v.paid).sort((a, b) => (b.customerSaysPaid ? 1 : 0) - (a.customerSaysPaid ? 1 : 0) || a.date.localeCompare(b.date));
-  const toBill = state.stops.filter((s) => s.status === 'done' && !s.visitId && !(s.type === 'snow' && cust(s.customerId)?.snowPlan === 'seasonal'));
+  const toBill = state.stops.filter((s) => s.status === 'done' && !s.visitId && cust(s.customerId) && (s.type === 'snow' ? (Array.isArray(s.passes) ? snowCharge(cust(s.customerId), s).total > 0 : cust(s.customerId).snowPlan !== 'seasonal') : true));
   let body = '';
+  const owed = unpaid.reduce((a, v) => a + num(v.total), 0);
+  const billRow = (st) => { const c = cust(st.customerId); return `<div class="line"><div class="grow"><div class="b">${esc(c?.name || '')}</div><div class="muted small">${st.type === 'snow' ? 'Snow' : 'Mow'} · ${shortDate(st.date || st.weekId)}${st.doneByName ? ' · ' + esc(st.doneByName) : ''}</div></div>
+    <button class="btn btn-primary btn-sm" data-a="${st.type === 'snow' && Array.isArray(st.passes) ? 'billSnow' : 'billStop'}" data-id="${st.id}" data-cid="${st.customerId}" data-kind="${st.type}">Make invoice</button></div>`; };
   if (state.moneyTab === 'overview') {
-    const block = (label, from) => { const i = sumIn(from), e = sumEx(from); return `<div class="sec">${label}</div><div class="grid3">
-      <div class="card stat"><div class="lbl">Income</div><div class="n" style="color:#1D4A22">${money(i)}</div></div>
-      <div class="card stat"><div class="lbl">Expenses</div><div class="n">${money(e)}</div></div>
-      <div class="card stat dark"><div class="lbl">Profit</div><div class="n">${money(i - e)}</div></div></div>`; };
-    body = `${block('This week', wk)}${block(now.toLocaleDateString('en-US', { month: 'long' }), mo)}${block(String(now.getFullYear()), yr)}
-      <button class="rowbtn" data-a="moneyTab" data-v="unpaid"><div class="grow"><div class="b">Unpaid</div><div class="muted">${unpaid.length} invoice${unpaid.length === 1 ? '' : 's'} · ${money(unpaid.reduce((a, v) => a + v.total, 0))}</div></div>›</button>
-      ${toBill.length ? `<button class="rowbtn" data-a="moneyTab" data-v="unpaid"><div class="grow"><div class="b">Done but not billed</div><div class="muted">${toBill.length} job${toBill.length === 1 ? '' : 's'} marked done by crew</div></div>›</button>` : ''}
-      <div class="muted small">Income counts when an invoice is marked paid. Weeks start Monday.</div>
+    const P = state.moneyPeriod, from = P === 'week' ? wk : P === 'year' ? yr : mo;
+    const label = P === 'week' ? `Week of ${weekLabel(wk)}` : P === 'year' ? String(now.getFullYear()) : now.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+    const i = sumIn(from), e = sumEx(from), pr = i - e;
+    const says = unpaid.filter((v) => v.customerSaysPaid).length;
+    const period = (k, l) => `<button class="chip ${P === k ? 'on' : ''}" data-a="moneyPeriod" data-v="${k}">${l}</button>`;
+    body = `${toBill.length ? `<div class="sec">Done, not billed</div><div class="card list">${toBill.map(billRow).join('')}</div>` : ''}
+      <div class="sec">Unpaid</div>
+      <div class="card" style="gap:6px">
+        <div class="between"><div><div class="big">${money(owed)}</div><div class="muted small">${unpaid.length ? `${unpaid.length} invoice${unpaid.length === 1 ? '' : 's'} owed${says ? ` · ${says} say${says === 1 ? 's' : ''} they paid` : ''}` : 'Everyone’s paid up'}</div></div>
+          ${unpaid.length ? '<button class="btn btn-ghost btn-sm" data-a="moneyTab" data-v="unpaid">See all</button>' : ''}</div>
+        ${unpaid.slice(0, 4).map((v) => `<div class="line" style="border-top:1px solid #ECEDEC;padding-top:8px"><div class="grow"><div class="b">${esc(v.customerName)}${v.customerSaysPaid ? ' <span class="pill p-orange" style="font-size:11px;padding:1px 7px">Says paid</span>' : ''}</div><div class="muted small">${shortDate(v.date)} · ${esc(chargeLabel(v))}</div></div>
+          <b style="margin-right:8px">${money(v.total)}</b><button class="btn btn-lime btn-sm" data-a="markPaid" data-id="${v.id}">${v.customerSaysPaid ? 'Confirm' : 'Paid'}</button></div>`).join('')}
+        ${unpaid.length > 4 ? `<button class="link" style="min-height:32px" data-a="moneyTab" data-v="unpaid">+ ${unpaid.length - 4} more</button>` : ''}</div>
+      <div class="between" style="margin-top:6px"><div class="sec" style="margin:0">${esc(label)}</div><div class="flex" style="gap:6px">${period('week', 'Week')}${period('month', 'Month')}${period('year', 'Year')}</div></div>
+      <div class="kpis">
+        <div class="kpi in"><div class="lbl">Income</div><div class="n">${money(i)}</div></div>
+        <div class="kpi"><div class="lbl">Expenses</div><div class="n">${money(e)}</div></div>
+        <div class="kpi profit"><div class="lbl">Profit</div><div class="n">${pr < 0 ? '−' : ''}${money(Math.abs(pr))}</div></div></div>
+      <div class="muted small center">Income counts when an invoice is marked paid. Weeks start Monday.</div>
       <button class="btn btn-ghost" data-a="exportCsv">Download income &amp; expenses (CSV)</button>`;
   } else if (state.moneyTab === 'unpaid') {
-    body = `${toBill.length ? `<div class="sec">Done but not billed</div>${toBill.map((s) => { const c = cust(s.customerId); return `<div class="card row"><div class="grow"><div class="b">${esc(c?.name || '')}</div><div class="muted">${s.type === 'snow' ? 'Snow' : 'Mow'} · ${shortDate(s.date || s.weekId)}${s.doneByName ? ' · ' + esc(s.doneByName) : ''}</div></div>
-        <button class="btn btn-primary btn-sm" data-a="billStop" data-id="${s.id}" data-cid="${s.customerId}" data-kind="${s.type}">Make invoice</button></div>`; }).join('')}` : ''}
+    body = `${toBill.length ? `<div class="sec">Done, not billed</div><div class="card list">${toBill.map(billRow).join('')}</div>` : ''}
       <div class="card row"><div class="grow"><div class="lbl">Total owed</div><div class="big">${money(unpaid.reduce((a, v) => a + v.total, 0))}</div></div><div class="muted">${unpaid.length} invoice${unpaid.length === 1 ? '' : 's'}</div></div>
       ${unpaid.length ? unpaid.map((v) => `<div class="card" style="gap:8px"><div class="between"><div><div class="b">${esc(v.customerName)}</div><div class="muted">${shortDate(v.date)} · ${esc(chargeLabel(v))}</div></div><div class="b">${money(v.total)}</div></div>
         ${v.customerSaysPaid ? `<div class="warnbar">${esc(first(v.customerName))} says they paid${v.customerSaysPaidAt ? ' on ' + shortDate(ymd(new Date(v.customerSaysPaidAt))) : ''}. Check Zelle/Venmo, then confirm.</div>` : ''}
@@ -1804,6 +1817,7 @@ const A = {
     toast('Thanks! Jace will confirm.');
   },
   copyZelle() { navigator.clipboard?.writeText(settings().zelle).then(() => toast('Copied Zelle number')); },
+  moneyPeriod(el) { state.moneyPeriod = el.dataset.v; render(); },
   togglePaid() { state.showPaidHistory = !state.showPaidHistory; render(); },
 
   // Auth
