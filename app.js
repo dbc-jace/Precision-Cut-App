@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.14.2';
+import { createStore, newId } from './store.js?v=2026.11.14.3';
 
-const APP_VERSION = '2026.11.14.2'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.14.3'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -880,6 +880,7 @@ function viewSettings() {
         <label class="btn btn-ghost full" style="margin-top:6px">Upload Zelle QR<input type="file" accept="image/*" data-change="zelleQr" class="sr"></label></div>
       ${field('venmo', 'Venmo link (business)', 'e.g. venmo.com/u/PrecisionCutLawns')}
       <label class="check"><input type="checkbox" data-setting="squareOn" ${s.squareOn ? 'checked' : ''}> Card &amp; Apple Pay through Square</label>
+      <a class="btn btn-ghost" href="https://app.squareup.com/dashboard" target="_blank" rel="noopener">Open Square</a>
       <div class="muted small">Adds a “Pay with card / Apple Pay” button to customers’ invoices and a pay link to invoice texts. Paid invoices are marked paid by themselves. Square keeps 3.3% + 30¢ per card payment.</div>
       <div class="muted small">Customers see these with a QR code and a Pay button in their account. Venmo shows once it’s filled in.</div>`),
     fold('business', 'Business info', esc(s.businessPhone), `${field('businessPhone', 'Phone on quotes and invoices')}${field('businessEmail', 'Email on quotes and invoices')}${field('website', 'Website link', 'Add your website')}`),
