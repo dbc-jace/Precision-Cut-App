@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.14.10';
+import { createStore, newId } from './store.js?v=2026.11.14.11';
 
-const APP_VERSION = '2026.11.14.10'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.14.11'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -632,7 +632,7 @@ function snowCard(r) {
     if (v && v.paid) status = `<div class="okbar">Billed ${money(v.total)} · Paid</div>`;
     else if (v && Math.abs(num(v.total) - ch.total) > 0.004) status = `<div class="between warnbar" style="padding:4px 4px 4px 12px"><span>Invoice is ${money(v.total)}, now ${money(ch.total)}</span><button class="btn btn-primary btn-sm" data-a="billSnow" data-id="${stop.id}">Update invoice</button></div>`;
     else if (v) status = `<div class="between okbar" style="padding:4px 4px 4px 12px"><span>Billed ${money(v.total)}${v.sentAt ? ' · sent' : ''}</span><button class="btn btn-primary btn-sm" data-a="sendInvoice" data-id="${v.id}">${v.sentAt ? 'Resend' : 'Send invoice'}</button></div>`;
-    else if (ch.total > 0) status = `<button class="btn btn-primary" data-a="billSnow" data-id="${stop.id}">Bill ${money(ch.total)}</button>`;
+    else if (ch.total > 0) status = `<button class="btn btn-primary" data-a="billSnow" data-id="${stop.id}">Add ${money(ch.total)} to their bill</button>`;
     else if (passesOf(stop).length) status = `<div class="okbar">Done${c.snowPlan === 'seasonal' ? ' (seasonal, nothing extra to bill)' : ''}</div>`;
   }
   return `<div class="card ${passesOf(stop).length ? 'done' : ''}" style="gap:8px">
@@ -643,7 +643,8 @@ function snowCard(r) {
     ${passesOf(stop).map((inches, i) => `<div class="between" style="gap:8px"><span>Visit ${i + 1}</span>
       <span class="flex" style="gap:6px;align-items:center"><input class="inp" style="width:72px;min-height:36px" type="number" inputmode="numeric" step="1" min="0" pattern="[0-9]*" value="${inches}" data-change="passInches" data-id="${stop.id}" data-i="${i}" aria-label="Inches on visit ${i + 1}"><span class="muted">in.</span>
       <button class="link danger" style="min-height:32px" data-a="snowPassDel" data-id="${stop.id}" data-i="${i}" aria-label="Remove visit ${i + 1}">✕</button></span></div>`).join('') || '<div class="muted small">No visits yet.</div>'}
-    <button class="btn btn-lime btn-sm" data-a="snowPassAdd" data-id="${stop.id}">+ Add visit${dayInchesOf(stop.date) !== '' ? ` (${dayInchesOf(stop.date)}")` : ''}</button>
+    <div class="flex" style="gap:8px"><button class="btn btn-ghost btn-sm" style="min-width:52px" data-a="snowPassUndo" data-id="${stop.id}" ${passesOf(stop).length ? '' : 'disabled'} aria-label="Remove the last visit">−</button>
+      <button class="btn btn-lime btn-sm grow" data-a="snowPassAdd" data-id="${stop.id}">+ Add visit${dayInchesOf(stop.date) !== '' ? ` (${dayInchesOf(stop.date)}")` : ''}</button></div>
     ${snowAddons().map((a) => counter(a.id, a.name, num(stop.addonCounts?.[a.id]), `${money(a.price)} each`)).join('')}
     ${admin ? `<div class="between b" style="border-top:1px solid #ECEDEC;padding-top:8px"><span>${esc(ch.desc)}</span><span>${money(ch.total)}</span></div>
       ${ch.lines.map((l) => `<div class="between muted small"><span>${esc(l.name)}</span><span>${money(l.price)}</span></div>`).join('')}` : ''}
@@ -1256,21 +1257,33 @@ function renderSheet() {
 // Snow stops: one per visit, so a driveway can be cleared (and billed) more than once a day.
 const snowStops = (cid, date) => state.stops.filter((s) => s.type === 'snow' && s.customerId === cid && s.date === date);
 function savePasses(st, passes) {
-  store.update('stops', st.id, { passes, visits: passes.length, status: passes.length ? 'done' : 'scheduled',
-    ...(passes.length && !st.doneAt ? { doneAt: Date.now(), doneByName: state.account?.name || '' } : {}) });
+  const upd = { passes, visits: passes.length, status: passes.length ? 'done' : 'scheduled',
+    ...(passes.length && !st.doneAt ? { doneAt: Date.now(), doneByName: state.account?.name || '' } : {}) };
+  store.update('stops', st.id, upd);
+  autoBillSnow({ ...st, ...upd });
 }
+// Every change on a snow card keeps that customer's invoice current, so it shows in Money right away.
+function autoBillSnow(st) { if (isAdmin()) billSnowStop(st.id, st).catch((e) => console.error(e)); }
 // Make or update this snow day's invoice for one customer. Paid invoices are never changed.
-async function billSnowStop(stopId) {
-  const st = stopOf(stopId), c = st && cust(st.customerId); if (!c) return false;
-  const ch = snowCharge(c, st); if (!(ch.total > 0)) return false;
-  const old = st.visitId && visitOf(st.visitId);
+const snowInvoiceOf = {}; // stop id -> invoice id made this session (covers fast double taps)
+async function billSnowStop(stopId, fresh) {
+  const st = fresh || stopOf(stopId), c = st && cust(st.customerId); if (!c) return false;
+  const ch = snowCharge(c, st);
+  const vid = st.visitId || snowInvoiceOf[stopId];
+  const old = vid && visitOf(vid);
   if (old && old.paid) return false;
+  if (!(ch.total > 0)) {
+    // Nothing to charge anymore (visits removed): drop the unpaid invoice.
+    if (old) { delete snowInvoiceOf[stopId]; await store.remove('visits', old.id); await store.update('stops', stopId, { visitId: null }); return true; }
+    return false;
+  }
   if (old) {
     if (Math.abs(num(old.total) - ch.total) < 0.005 && old.desc === ch.desc) return false;
     await store.update('visits', old.id, { desc: ch.desc, price: ch.base, addons: ch.lines, total: ch.total, customerName: c.name });
     return true;
   }
   const v = createVisit({ customerId: c.id, type: 'snow', price: ch.base, addons: ch.lines, desc: ch.desc, stopId, date: st.date });
+  snowInvoiceOf[stopId] = v.id;
   await store.update('stops', stopId, { visitId: v.id });
   return true;
 }
@@ -1463,7 +1476,9 @@ const A = {
     const k = el.dataset.k, d = Number(el.dataset.d);
     {
       const n = Math.max(0, num(st.addonCounts?.[k]) + d);
-      store.update('stops', st.id, { addonCounts: { ...(st.addonCounts || {}), [k]: n } });
+      const addonCounts = { ...(st.addonCounts || {}), [k]: n };
+      store.update('stops', st.id, { addonCounts });
+      autoBillSnow({ ...st, addonCounts });
     }
   },
   snowPassAdd(el) {
@@ -1471,6 +1486,7 @@ const A = {
     const d = dayInchesOf(st.date);
     savePasses(st, [...passesOf(st), d === '' ? 0 : d]);
   },
+  snowPassUndo(el) { const st = stopOf(el.dataset.id); if (!st) return; const p = passesOf(st); if (!p.length) return; p.pop(); savePasses(st, p); },
   snowPassDel(el) { const st = stopOf(el.dataset.id); if (!st) return; const p = passesOf(st); p.splice(Number(el.dataset.i), 1); savePasses(st, p); },
   snowRemove(el) { if (!confirm('Take them off today\'s snow list?')) return; store.remove('stops', el.dataset.id); },
   async billSnow(el) { await run(() => billSnowStop(el.dataset.id)); toast('Invoice ready. Send it from the card or Money.'); },
