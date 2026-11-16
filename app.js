@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.16.11';
+import { createStore, newId } from './store.js?v=2026.11.16.12';
 
-const APP_VERSION = '2026.11.16.11'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.16.12'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -598,7 +598,7 @@ async function askToJoin(name, invite) {
   try {
     const owner = settings().alertEmail.trim() || settings().businessEmail.trim() || DEFAULTS.alertEmail;
     if (owner) await sendAlert(owner, `Waiting to join: ${name}`, { Name: name, Email: email, When: new Date().toLocaleString('en-US'),
-      'Next step': 'Open the app > Route > Requests and tap Approve.' });
+      'Next step': 'Open the app > Route > Inbox and tap Approve.' });
   } catch (e) { console.error('Waiting-to-join alert email NOT sent:', e?.message || e); }
 }
 // Emails Jace when someone uses an invite link, so he knows to set up their account.
@@ -664,11 +664,11 @@ function demoBar() {
 function renderStaff() {
   const tabs = isAdmin() ? ['route', 'customers', 'money', 'quotes', 'settings'] : ['route', 'customers'];
   if (!tabs.includes(state.tab)) state.tab = 'route';
-  const openReq = state.requests.filter((r) => r.status !== 'done').length + (isAdmin() ? state.pending.length : 0);
+  const openReq = state.requests.filter((r) => r.status !== 'done').length + (isAdmin() ? state.pending.length + inboxAlerts().filter((a) => !a.seen).length : 0);
   const saysPaid = state.visits.filter((v) => !v.paid && v.customerSaysPaid).length;
   const newAccepts = state.quotes.filter((q) => q.acceptedAt && !q.acceptedSeen).length;
   const view = { route: viewRoute, customers: viewCustomers, money: viewMoney, quotes: viewQuotes, settings: viewSettings }[state.tab]();
-  const titles = { route: ['Route', state.routeSeg === 'snow' ? 'Snow removal' : state.routeSeg === 'inbox' ? 'Requests from customers' : 'Week of ' + weekLabel(state.week)],
+  const titles = { route: ['Route', state.routeSeg === 'snow' ? 'Snow removal' : state.routeSeg === 'inbox' ? 'Messages, requests and alerts' : 'Week of ' + weekLabel(state.week)],
     customers: ['Customers', custSummary()], money: ['Money', 'Income, expenses and who owes'],
     quotes: ['Quotes', 'For new customers and custom jobs'], settings: ['Settings', 'Only you can see this'] }[state.tab];
   if (state.tab === 'customers' && state.custId) titles[0] = state.editing ? (cust(state.custId) ? 'Edit customer' : 'New customer') : 'Customer';
@@ -798,6 +798,16 @@ function snowCard(r) {
     ${status}
     ${!v && !passesOf(stop).length ? `<button class="link danger" style="min-height:32px" data-a="snowRemove" data-id="${stop.id}">Not going today (remove)</button>` : ''}</div>`;
 }
+// Inbox alerts: accepted quotes and app sign-ups from the last 60 days. "Got it" marks them seen.
+function inboxAlerts() {
+  if (!isAdmin()) return [];
+  const since = Date.now() - 60 * 864e5, out = [];
+  state.quotes.filter((q) => q.acceptedAt > since).forEach((q) => out.push({ kind: 'quote', id: q.id, at: q.acceptedAt, seen: !!q.acceptedSeen, cid: q.customerId,
+    name: q.acceptedName || q.name, text: `Accepted quote Q-${q.number}${q.acceptedPhone ? ' · ' + q.acceptedPhone : ''}${q.customerId && cust(q.customerId)?.needsDetails ? ' · added to Customers, fill in their details' : ''}` }));
+  state.invites.filter((i) => i.usedAt > since).forEach((i) => out.push({ kind: 'join', id: i.id, at: i.usedAt, seen: !!i.seenAt, cid: i.linkedCustomerId || i.customerId,
+    name: i.name || i.usedBy, text: `${i.role === 'crew' ? 'Crew' : 'Customer'} account created · ${i.usedBy}` }));
+  return out.sort((a, b) => b.at - a.at);
+}
 function viewRoute() {
   const seg = (k, l) => `<button class="${state.routeSeg === k ? 'on' : ''}" data-a="routeSeg" data-v="${k}">${l}</button>`;
   const openReq = state.requests.filter((r) => r.status !== 'done');
@@ -847,7 +857,14 @@ function viewRoute() {
     const handled = state.requests.filter((r) => r.status === 'done').length;
     const waiting = isAdmin() ? [...state.pending].sort((a, b) => (b.at || 0) - (a.at || 0)) : [];
     const custOpts = [...state.customers].sort(byName).map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
-    body = waiting.map((p) => {
+    // Alerts (the same things that get emailed): accepted quotes (with the customer they made) and app sign-ups.
+    const alerts = isAdmin() ? inboxAlerts() : [], fresh = alerts.filter((a) => !a.seen), seenRecent = alerts.filter((a) => a.seen && Date.now() - a.at < 14 * 864e5);
+    const alertCard = (a) => `<div class="card" style="gap:8px;${a.seen ? 'opacity:.6' : ''}"><div class="between"><div class="b">${esc(a.name)}</div>${pill(a.kind === 'quote' ? 'p-green' : 'p-blue', a.kind === 'quote' ? 'Quote accepted' : 'Joined the app')}</div>
+      <div class="muted small">${new Date(a.at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })} · ${esc(a.text)}</div>
+      <div class="flex wrap">${a.cid && cust(a.cid) ? `<button class="btn btn-ghost btn-sm" data-a="openCust" data-id="${a.cid}">Open customer</button>` : ''}
+        ${a.kind === 'quote' ? `<button class="btn btn-ghost btn-sm" data-a="inboxQuote" data-id="${a.id}">Open quote</button>` : ''}
+        ${a.seen ? '' : `<button class="btn btn-lime btn-sm" style="margin-left:auto" data-a="alertSeen" data-kind="${a.kind}" data-id="${a.id}">Got it</button>`}</div></div>`;
+    body = fresh.map(alertCard).join('') + waiting.map((p) => {
       const inv = p.invite && state.invites.find((i) => i.id === p.invite);
       const match = inv?.customerId || p.suggest || state.customers.find((c) => (c.email || '').toLowerCase() === p.id)?.id || '';
       return `<div class="card"><div class="between"><div class="b">${esc(p.name)}</div>${pill('p-orange', 'Waiting to join')}</div>
@@ -868,9 +885,11 @@ function viewRoute() {
           <button class="btn btn-ghost btn-sm" data-a="reqDone" data-id="${r.id}">Mark handled</button>
           <button class="link danger" style="min-height:32px;margin-left:auto" data-a="reqDel" data-id="${r.id}">Delete</button></div>`
           : `<div class="between"><span class="muted small">Handled</span><button class="link danger" style="min-height:32px" data-a="reqDel" data-id="${r.id}">Delete</button></div>`}</div>`;
-    }).join('') : waiting.length ? '' : '<div class="card empty">No requests yet. Customers can request snow removal or a mow, or send you a message, from their account.</div>');
+    }).join('') : waiting.length || fresh.length ? '' : '<div class="card empty">Nothing new. Customer messages and requests, sign-ups and accepted quotes show up here.</div>')
+      + (seenRecent.length ? `<div class="sec">Earlier alerts</div>${seenRecent.map(alertCard).join('')}` : '');
   }
-  return `<div class="seg">${seg('grass', 'Grass')}${seg('snow', 'Snow')}${seg('inbox', `Requests${openReq.length + (isAdmin() ? state.pending.length : 0) ? ' (' + (openReq.length + (isAdmin() ? state.pending.length : 0)) + ')' : ''}`)}</div>${body}`;
+  const inboxN = openReq.length + (isAdmin() ? state.pending.length + inboxAlerts().filter((a) => !a.seen).length : 0);
+  return `<div class="seg">${seg('grass', 'Grass')}${seg('snow', 'Snow')}${seg('inbox', `Inbox${inboxN ? ' (' + inboxN + ')' : ''}`)}</div>${body}`;
 }
 
 /* ----- Customers ----- */
@@ -2094,6 +2113,8 @@ const A = {
   acceptQuote(el) { acceptQuotePage(el); },
   async sendStatement(el) { await run(() => sendInvoice(null, el.dataset.cid)); },
   yearCsv(el) { const y = el.dataset.y; download(`precision-cut-${y}.csv`, yearCsv(y), 'text/csv'); },
+  alertSeen(el) { if (el.dataset.kind === 'quote') store.update('quotes', el.dataset.id, { acceptedSeen: true }); else store.update('invites', el.dataset.id, { seenAt: Date.now() }); },
+  inboxQuote(el) { const q = state.quotes.find((x) => x.id === el.dataset.id); if (q && !q.acceptedSeen) store.update('quotes', q.id, { acceptedSeen: true }); state.tab = 'quotes'; state.quoteId = el.dataset.id; render(); scrollTo(0, 0); },
   custSeg(el) { state.custSeg = el.dataset.v; render(); },
   openPayment(el) { state.sheet = { kind: 'payment', cid: el.dataset.cid }; renderSheet(); },
   async savePayment() {
