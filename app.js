@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.16.12';
+import { createStore, newId } from './store.js?v=2026.11.16.13';
 
-const APP_VERSION = '2026.11.16.12'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.16.13'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -799,12 +799,14 @@ function snowCard(r) {
     ${!v && !passesOf(stop).length ? `<button class="link danger" style="min-height:32px" data-a="snowRemove" data-id="${stop.id}">Not going today (remove)</button>` : ''}</div>`;
 }
 // Inbox alerts: accepted quotes and app sign-ups from the last 60 days. "Got it" marks them seen.
+// Deleting an alert only hides it from the inbox; the quote or sign-up itself stays.
+const hideAlert = (a) => store.update(a.kind === 'quote' ? 'quotes' : 'invites', a.id, { alertHidden: true, ...(a.kind === 'quote' ? { acceptedSeen: true } : { seenAt: Date.now() }) });
 function inboxAlerts() {
   if (!isAdmin()) return [];
   const since = Date.now() - 60 * 864e5, out = [];
-  state.quotes.filter((q) => q.acceptedAt > since).forEach((q) => out.push({ kind: 'quote', id: q.id, at: q.acceptedAt, seen: !!q.acceptedSeen, cid: q.customerId,
+  state.quotes.filter((q) => q.acceptedAt > since && !q.alertHidden).forEach((q) => out.push({ kind: 'quote', id: q.id, at: q.acceptedAt, seen: !!q.acceptedSeen, cid: q.customerId,
     name: q.acceptedName || q.name, text: `Accepted quote Q-${q.number}${q.acceptedPhone ? ' · ' + q.acceptedPhone : ''}${q.customerId && cust(q.customerId)?.needsDetails ? ' · added to Customers, fill in their details' : ''}` }));
-  state.invites.filter((i) => i.usedAt > since).forEach((i) => out.push({ kind: 'join', id: i.id, at: i.usedAt, seen: !!i.seenAt, cid: i.linkedCustomerId || i.customerId,
+  state.invites.filter((i) => i.usedAt > since && !i.alertHidden).forEach((i) => out.push({ kind: 'join', id: i.id, at: i.usedAt, seen: !!i.seenAt, cid: i.linkedCustomerId || i.customerId,
     name: i.name || i.usedBy, text: `${i.role === 'crew' ? 'Crew' : 'Customer'} account created · ${i.usedBy}` }));
   return out.sort((a, b) => b.at - a.at);
 }
@@ -863,7 +865,8 @@ function viewRoute() {
       <div class="muted small">${new Date(a.at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })} · ${esc(a.text)}</div>
       <div class="flex wrap">${a.cid && cust(a.cid) ? `<button class="btn btn-ghost btn-sm" data-a="openCust" data-id="${a.cid}">Open customer</button>` : ''}
         ${a.kind === 'quote' ? `<button class="btn btn-ghost btn-sm" data-a="inboxQuote" data-id="${a.id}">Open quote</button>` : ''}
-        ${a.seen ? '' : `<button class="btn btn-lime btn-sm" style="margin-left:auto" data-a="alertSeen" data-kind="${a.kind}" data-id="${a.id}">Got it</button>`}</div></div>`;
+        ${a.seen ? '' : `<button class="btn btn-lime btn-sm" style="margin-left:auto" data-a="alertSeen" data-kind="${a.kind}" data-id="${a.id}">Got it</button>`}
+        <button class="link danger" style="min-height:32px;${a.seen ? 'margin-left:auto' : ''}" data-a="alertDel" data-kind="${a.kind}" data-id="${a.id}">Delete</button></div></div>`;
     body = fresh.map(alertCard).join('') + waiting.map((p) => {
       const inv = p.invite && state.invites.find((i) => i.id === p.invite);
       const match = inv?.customerId || p.suggest || state.customers.find((c) => (c.email || '').toLowerCase() === p.id)?.id || '';
@@ -872,7 +875,7 @@ function viewRoute() {
         <label class="f"><span class="lbl">Let them in as</span><select class="inp" id="pend_${esc(p.id)}"><option value="new">A new customer</option>${custOpts.replace(`value="${match}"`, `value="${match}" selected`)}</select></label>
         <div class="flex wrap"><button class="btn btn-primary btn-sm" data-a="approvePending" data-id="${esc(p.id)}">Approve</button>
           <button class="link danger" style="min-height:32px;margin-left:auto" data-a="dismissPending" data-id="${esc(p.id)}">Remove</button></div></div>`;
-    }).join('') + (handled ? `<div class="between"><span class="muted small">${handled} handled</span><button class="link danger" style="min-height:32px" data-a="reqClearDone">Delete all handled</button></div>` : '')
+    }).join('') + (handled + seenRecent.length ? `<div class="between"><span class="muted small">${handled + seenRecent.length} handled or seen</span><button class="link danger" style="min-height:32px" data-a="reqClearDone">Delete all old</button></div>` : '')
       + (all.length ? all.map((r) => {
       const c = cust(r.customerId);
       return `<div class="card" style="${r.status === 'done' ? 'opacity:.6' : ''}"><div class="between"><div class="b">${esc(c?.name || r.customerName)}</div>${pill(r.type === 'snow' ? 'p-blue' : r.type === 'mow' ? 'p-green' : 'p-orange', r.fromAdmin ? 'You sent' : REQ_LABEL[r.type])}</div>
@@ -1822,10 +1825,11 @@ const A = {
   custHide(el) { if (!confirm('Delete this message from your app?')) return; store.update('requests', el.dataset.id, { custHidden: true, custSeenAt: Date.now() }); toast('Deleted'); },
   reqDel(el) { if (!confirm('Delete this for good?')) return; store.remove('requests', el.dataset.id); toast('Deleted'); },
   reqClearDone() {
-    const done = state.requests.filter((r) => r.status === 'done');
-    if (!confirm(`Delete ${done.length} handled request${done.length === 1 ? '' : 's'} and message${done.length === 1 ? '' : 's'} for good?`)) return;
-    done.forEach((r) => store.remove('requests', r.id)); toast('Deleted');
+    const done = state.requests.filter((r) => r.status === 'done'), seen = inboxAlerts().filter((a) => a.seen), n = done.length + seen.length;
+    if (!confirm(`Delete ${n} old item${n === 1 ? '' : 's'} from your inbox (handled requests and messages, and alerts you’ve seen)?`)) return;
+    done.forEach((r) => store.remove('requests', r.id)); seen.forEach(hideAlert); toast('Deleted');
   },
+  alertDel(el) { hideAlert({ kind: el.dataset.kind, id: el.dataset.id }); toast('Deleted'); },
   reqDone(el) { store.update('requests', el.dataset.id, { status: 'done', handledAt: Date.now() }); },
 
   // Customers
