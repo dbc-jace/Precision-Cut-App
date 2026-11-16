@@ -114,6 +114,14 @@ service cloud.firestore {
         && resource.data.status == 'scheduled'
         && request.resource.data.status == 'skipped' && request.resource.data.skippedBy == 'customer'
         && request.resource.data.customerId == resource.data.customerId;
+      // Every-2-weeks customers can add an extra cut in an off week (and cancel it before it's done).
+      allow create: if ownsCustomer(request.resource.data.customerId)
+        && id == request.resource.data.weekId + '_' + request.resource.data.customerId
+        && request.resource.data.status == 'scheduled' && request.resource.data.extra == true
+        && request.resource.data.addedBy == 'customer' && request.resource.data.type == 'grass'
+        && request.resource.data.keys().hasOnly(['customerId', 'weekId', 'type', 'status', 'extra', 'addedBy', 'addedAt']);
+      allow delete: if ownsCustomer(resource.data.customerId)
+        && resource.data.extra == true && resource.data.addedBy == 'customer' && resource.data.status == 'scheduled';
     }
 
     // Invoices. Admin manages them. A customer reads their own and can only tap "I've paid".

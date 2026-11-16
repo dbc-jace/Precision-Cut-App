@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.15.4';
+import { createStore, newId } from './store.js?v=2026.11.16.1';
 
-const APP_VERSION = '2026.11.15.4'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.16.1'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -653,12 +653,25 @@ function dueGrass(c, weekId, depth = 0) {
   if (c.createdAt && weekId < weekStart(new Date(c.createdAt))) return false;
   if (c.grassPlan === 'weekly') return true;
   if (c.grassPlan !== 'biweekly') return false;
+  // Switched to the in-between week: their new week is on, the weeks from the switch up to it are off.
+  if (c.biStart) { if (weekId === c.biStart) return true; if (c.biFrom && weekId >= c.biFrom && weekId < c.biStart) return false; }
   return depth > 60 || !mowWeek(c, shiftWeek(weekId, -1), depth + 1);
+}
+// Every-2-weeks: the next few in-season weeks and whether each is a mow week (extra cuts don't move their rhythm).
+function biWeeks(c, n = 6) {
+  const out = []; let wk = weekStart(new Date());
+  for (let i = 0; out.length < n && i < 40; i++, wk = shiftWeek(wk, 1)) {
+    if (!grassWeek(wk)) continue;
+    const st = stopOf(`${wk}_${c.id}`);
+    out.push({ wk, due: dueGrass(c, wk), stop: st, extra: !!st?.extra, skipped: st?.status === 'skipped' });
+  }
+  return out;
 }
 // Did (or will) this customer get a mow that week? A stop on file wins, otherwise their plan decides.
 function mowWeek(c, weekId, depth = 0) {
   const stop = stopOf(`${weekId}_${c.id}`);
-  return stop ? stop.status !== 'skipped' : dueGrass(c, weekId, depth);
+  // An extra cut doesn't count: it doesn't move their every-2-weeks rhythm.
+  return stop && !stop.extra ? stop.status !== 'skipped' : dueGrass(c, weekId, depth);
 }
 // Open "Request a mow" from the app puts that customer on the route automatically:
 // the week they asked, and this week until it's done or handled.
@@ -696,7 +709,7 @@ function stopCard(r, kind) {
   const sameDay = kind === 'snow' ? snowStops(c.id, stop.date) : [];
   if (kind === 'snow' && r.status === 'done' && !sameDay.some((s) => s.status === 'scheduled') && (stop.visit || 1) === Math.max(...sameDay.map((s) => s.visit || 1)))
     action += `<button class="btn btn-ghost btn-sm" data-a="snowAgain" data-cid="${c.id}">+ Clean again today</button>`;
-  const plan = kind === 'snow' ? (c.snowPlan === 'seasonal' ? 'Seasonal' : 'Per snow') + ((stop?.visit || 1) > 1 ? ` · Visit ${stop.visit}` : '') : (r.asked && !stop?.manual ? 'Asked for a mow' : stop?.manual ? 'Added' : { weekly: 'Weekly', biweekly: 'Every 2 wks', oncall: 'On call' }[c.grassPlan] || '');
+  const plan = kind === 'snow' ? (c.snowPlan === 'seasonal' ? 'Seasonal' : 'Per snow') + ((stop?.visit || 1) > 1 ? ` · Visit ${stop.visit}` : '') : (stop?.extra ? (stop.addedBy === 'customer' ? 'Extra cut (they asked)' : 'Extra cut') : r.asked && !stop?.manual ? 'Asked for a mow' : stop?.manual ? 'Added' : { weekly: 'Weekly', biweekly: 'Every 2 wks', oncall: 'On call' }[c.grassPlan] || '');
   return `<div class="card ${r.status === 'done' ? 'done' : ''}" style="gap:8px">
     <div class="between"><button class="plain grow" data-a="openCust" data-id="${c.id}"><div class="b" style="font-size:16px">${esc(c.name)}</div></button>${pill(r.status === 'skipped' ? 'p-gray' : 'p-blue', plan)}</div>
     ${c.address ? `<a href="https://maps.apple.com/?q=${encodeURIComponent(fullAddr(c))}" class="muted">${esc(c.address)}</a>` : ''}
@@ -840,6 +853,17 @@ function statementsCard(c, admin) {
       <button class="btn btn-ghost btn-sm" data-a="custPdf" data-cid="${c.id}" data-start="${p.start}">Open PDF</button></div>`; }).join('')}</div>
     ${admin ? `<button class="link" style="min-height:36px" data-a="freshStatement" data-cid="${c.id}">+ Start a separate statement today</button>` : ''}</div>`;
 }
+// Every-2-weeks schedule on the customer page: see their weeks, switch to the in-between week, or add an extra cut.
+function biCard(c) {
+  const wks = biWeeks(c);
+  return `<div class="sec">Every-2-weeks schedule</div><div class="card"><div class="muted small">Switch them to the in-between week, or add an extra cut when the grass is growing fast. Extra cuts don’t change their weeks.</div>
+    ${wks.length ? `<div class="list">${wks.map((w) => `<div class="line"><div class="grow"><div class="b">Week of ${esc(weekLabel(w.wk))}</div>
+      <div class="muted small">${w.skipped ? 'Skipped' : w.extra ? `Extra cut${w.stop.addedBy === 'customer' ? ' (they asked)' : ''}` : w.due || w.stop ? 'Mow week' : 'Off week'}</div></div>
+      ${w.extra && w.stop.status === 'scheduled' ? `<button class="link danger" style="min-height:32px" data-a="extraCutDel" data-cid="${c.id}" data-wk="${w.wk}">Remove</button>`
+        : !w.due && !w.stop ? `<span class="flex" style="gap:6px"><button class="btn btn-ghost btn-sm" data-a="extraCut" data-cid="${c.id}" data-wk="${w.wk}">+ Extra cut</button>
+          <button class="btn btn-ghost btn-sm" data-a="biSwitch" data-cid="${c.id}" data-wk="${w.wk}">Switch here</button></span>` : ''}</div>`).join('')}</div>`
+      : '<div class="muted">Mowing season is over. Their weeks pick back up in April.</div>'}</div>`;
+}
 function viewCustomer() {
   const c = cust(state.custId), p = priceOf(c.id), admin = isAdmin();
   const u = admin && userForCustomer(c.id);
@@ -863,6 +887,7 @@ function viewCustomer() {
       ${admin && c.snow && c.snowPlan === 'seasonal' ? `<button class="btn btn-ghost" data-a="billSeason" data-cid="${c.id}">Bill snow season (${money(p.season)})</button>` : ''}
       ${admin ? `<button class="btn btn-ghost" data-a="otherWork" data-cid="${c.id}">Bill other work</button>` : ''}
     </div>
+    ${admin && c.grass && c.active && c.grassPlan === 'biweekly' ? biCard(c) : ''}
     ${admin ? `<div class="sec">App access</div>
     <div class="card">${u ? `${usersForCustomer(c.id).map((x, i) => `<div class="between" ${i ? 'style="border-top:1px solid #ECEDEC;padding-top:10px"' : ''}><div><div class="b">${esc(x.name || c.name)}</div><div class="muted">${esc(x.id)}</div></div>${pill('p-green', 'Has access')}</div>
         <div class="flex wrap"><button class="btn btn-ghost btn-sm" data-a="reinvite" data-email="${esc(x.id)}">Send the welcome text again</button>
@@ -1162,7 +1187,11 @@ function renderCustomerHome() {
     } else {
       const plan = c.grassPlan === 'weekly' ? 'Weekly' : 'Every 2 weeks';
       let inner = '';
-      if (!status) inner = '<div class="muted">No mow this week. Every-2-weeks: you’re on next week.</div>';
+      const myExtra = stop?.extra && stop.status === 'scheduled';
+      if (!status) inner = `<div class="muted">No mow this week. Every-2-weeks: you’re on next week.</div>
+        ${c.grassPlan === 'biweekly' && grassWeek(wk) ? `<button class="btn btn-ghost" data-a="custExtra">Grass growing fast? Add an extra cut this week</button><div class="muted small">${priceOf(c.id).grass ? money(priceOf(c.id).grass) + ', added' : 'Added'} to your bill. Your regular weeks stay the same.</div>` : ''}`;
+      else if (myExtra) inner = `<div class="okbar">Extra cut this week (${esc(weekLabel(wk))})</div>
+        ${stop.addedBy === 'customer' ? '<button class="link danger" style="min-height:36px" data-a="custExtraCancel">Cancel the extra cut</button>' : ''}`;
       else if (status === 'done') inner = '<div class="okbar">✓ Mowed this week. Thank you!</div>';
       else if (status === 'skipped') inner = `<div class="warnbar">You’re skipping this week.</div>`;
       else inner = `<div class="okbar">Scheduled this week (${esc(weekLabel(wk))})</div>
@@ -1566,8 +1595,9 @@ const A = {
   reminded(el) { store.update('stops', el.dataset.id, { customerId: el.dataset.cid, weekId: state.week, type: 'grass', status: stopOf(el.dataset.id)?.status || 'scheduled', reminded: Date.now() }); },
   openOncall() { state.sheet = { kind: 'oncall' }; renderSheet(); },
   openAddWeek() { state.sheet = { kind: 'addWeek' }; renderSheet(); },
-  addWeek(el) { const id = `${state.week}_${el.dataset.cid}`, old = stopOf(id);
-    store.set('stops', id, { customerId: el.dataset.cid, weekId: state.week, type: 'grass', status: 'scheduled', manual: true, ...(old?.day != null ? { day: old.day } : {}) });
+  addWeek(el) { const id = `${state.week}_${el.dataset.cid}`, old = stopOf(id), c = cust(el.dataset.cid);
+    const extra = c?.grassPlan === 'biweekly' && !dueGrass(c, state.week);
+    store.set('stops', id, { customerId: el.dataset.cid, weekId: state.week, type: 'grass', status: 'scheduled', manual: true, ...(extra ? { extra: true, addedBy: 'admin' } : {}), ...(old?.day != null ? { day: old.day } : {}) });
     toast('Added to this week'); renderSheet(); },
   oncallYes(el) { store.set('stops', `${state.week}_${el.dataset.cid}`, { customerId: el.dataset.cid, weekId: state.week, type: 'grass', status: 'scheduled' }); toast('Added to this week'); },
   startSnow() {
@@ -1893,6 +1923,17 @@ const A = {
     store.set('stops', `${wk}_${c.id}`, { ...(existing ? Object.fromEntries(Object.entries(existing).filter(([k]) => k !== 'id')) : { weekId: wk, type: 'grass' }), customerId: c.id, status: 'skipped', skippedBy: 'customer', skippedAt: Date.now() });
     toast('Skipped. See you next time!');
   },
+  custExtra() {
+    const c = state.customers[0], wk = weekStart(new Date());
+    if (!confirm('Add an extra cut this week? It’s added to your bill. Your regular every-2-weeks schedule stays the same.')) return;
+    store.set('stops', `${wk}_${c.id}`, { customerId: c.id, weekId: wk, type: 'grass', status: 'scheduled', extra: true, addedBy: 'customer', addedAt: Date.now() });
+    toast('Extra cut added. See you this week!');
+  },
+  custExtraCancel() {
+    const c = state.customers[0], wk = weekStart(new Date());
+    if (!confirm('Cancel the extra cut this week?')) return;
+    store.remove('stops', `${wk}_${c.id}`); toast('Extra cut cancelled');
+  },
   custRequest(el) {
     const c = state.customers[0], s = settings(), type = el.dataset.type;
     const text = type === 'message' ? val('m_text').trim() : '';
@@ -1905,6 +1946,17 @@ const A = {
     renderSheet();
   },
   acceptQuote(el) { acceptQuotePage(el); },
+  extraCut(el) {
+    const { cid, wk } = el.dataset;
+    store.set('stops', `${wk}_${cid}`, { customerId: cid, weekId: wk, type: 'grass', status: 'scheduled', manual: true, extra: true, addedBy: 'admin' });
+    toast(`Extra cut added for the week of ${weekLabel(wk)}`);
+  },
+  extraCutDel(el) { const { cid, wk } = el.dataset; store.remove('stops', `${wk}_${cid}`); toast('Extra cut removed'); },
+  biSwitch(el) {
+    const c = cust(el.dataset.cid), wk = el.dataset.wk; if (!c) return;
+    if (!confirm(`Switch ${first(c.name)} to the week of ${weekLabel(wk)}? They’ll be mowed that week and every 2 weeks after.`)) return;
+    store.update('customers', c.id, { biStart: wk, biFrom: weekStart(new Date()) }); toast(`${first(c.name)} now goes the week of ${weekLabel(wk)}`);
+  },
   freshStatement(el) {
     const c = cust(el.dataset.cid); if (!c) return;
     if (statementBreaks(c).includes(today())) return toast('A statement already starts today');
