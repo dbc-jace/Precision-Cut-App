@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.16.6';
+import { createStore, newId } from './store.js?v=2026.11.16.7';
 
-const APP_VERSION = '2026.11.16.6'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.16.7'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -83,7 +83,7 @@ const deadlineText = (weekId) => skipDeadline(weekId).toLocaleString('en-US', { 
 /* ---------- defaults ---------- */
 const DEFAULTS = {
   alertEmail: 'jace.precisioncutlawns@gmail.com',
-  businessName: 'Precision Cut Lawns', businessPhone: '224-334-8532', businessEmail: 'jace.precisioncutlawns@gmail.com', website: '', zelle: '224-334-8532', venmo: '', zelleQr: '',
+  businessName: 'Precision Cut Lawns', businessPhone: '224-334-8532', businessEmail: 'jace.precisioncutlawns@gmail.com', businessAddress: '23510 N Cottage Rd, Hawthorn Woods, IL 60047', website: '', zelle: '224-334-8532', venmo: '', zelleQr: '',
   skipDay: 3, skipTime: '18:00',
   reminderMsg: 'Hi {first}, it\'s Jace with Precision Cut Lawns. Your lawn is scheduled to be mowed this week ({week}). Need to skip? Tap here by {deadline}: {link}',
   oncallMsg: 'Hi, it\'s Jace with Precision Cut Lawns. Would you like your grass cut today?',
@@ -213,6 +213,9 @@ async function buildPdf(kind, data) {
   doc.addImage(await imgData('logo-full.jpg'), 'JPEG', L, 30, 156, 82);
   font('bold', 11, forest); doc.text(s.businessName || 'Precision Cut Lawns', L, 128);
   font('normal', 9.5, muted); contact.forEach((c, i) => doc.text(c, L, 142 + i * 13));
+  // Business address, small, under the phone and email: street on one line, city/state/ZIP on the next.
+  const addr = String(s.businessAddress || '').trim(), addrLines = addr ? addr.replace(/,\s*/, '\n').split('\n') : [];
+  font('normal', 8.5, muted); addrLines.forEach((l, i) => doc.text(l.trim(), L, 142 + contact.length * 13 + i * 11));
 
   font('bold', 30, forest); doc.text(title, R, 62, { align: 'right', charSpace: 2 });
   // Number / date box
@@ -225,7 +228,7 @@ async function buildPdf(kind, data) {
   });
 
   // Bill to / terms
-  let y = Math.max(190, 142 + contact.length * 13 + 26);
+  let y = Math.max(190, 142 + contact.length * 13 + addrLines.length * 11 + 22);
   const boxH = 30 + Math.max(1, data.to.filter(Boolean).length) * 14 + 16;
   doc.setDrawColor(...rule); doc.setLineWidth(1);
   doc.roundedRect(L, y, 250, boxH, 4, 4, 'S'); doc.roundedRect(L + 266, y, W - 266, boxH, 4, 4, 'S');
@@ -414,7 +417,7 @@ async function statementFile(cid, p = currentPeriod(cid)) {
   const carry = st.rows.find((r) => r.carry);
   if (carry) meta.splice(2, 0, ['Previous balance', (carry.amt < 0 ? '-' : '') + money2(Math.abs(carry.amt))]);
   const blob = await buildPdf('invoice', { title: 'STATEMENT', meta, name: bothNames(c) || c.name, to: [...addrLines(c), c.phone], lines, totalLabel: bal < -0.004 ? 'Credit' : paid ? 'Balance' : 'Balance due', total: Math.abs(bal), paid,
-    terms: paid ? (bal < -0.004 ? `You have a ${money2(-bal)} credit for upcoming visits. Thank you!` : 'All paid up. Thank you!') : `Due upon receipt. Pay by ${s.squareOn ? 'card or Apple Pay, ' : ''}Zelle${s.venmo ? ' or Venmo' : ''}.` });
+    terms: paid ? (bal < -0.004 ? `You have a ${money2(-bal)} credit for upcoming visits. Thank you!` : 'All paid up. Thank you!') : `Due upon receipt. Pay by ${[...(s.squareOn ? ['card', 'Apple Pay'] : []), 'Zelle', ...(s.venmo ? ['Venmo'] : [])].reduce((t, w, i, arr) => t + (i === 0 ? '' : i === arr.length - 1 ? ' or ' : ', ') + w, '')}.` });
   return new File([blob], `Precision Cut Lawns - ${String(c.name || 'Statement').replace(/[\\/:*?"<>|]/g, '')} ${p.whole ? p.start.slice(0, 4) : `${p.start.slice(0, 4)} from ${shortDate(p.start)}`}.pdf`, { type: 'application/pdf' });
 }
 // What's on a quote, as lines. Used by the PDF and by the customer's Accept page.
@@ -1170,7 +1173,7 @@ function viewSettings() {
       <a class="btn btn-ghost" href="https://app.squareup.com/dashboard" target="_blank" rel="noopener">Open Square</a>
       <div class="muted small">Adds a “Pay with card / Apple Pay” button to customers’ invoices and a pay link to invoice texts. Paid invoices are marked paid by themselves. Square keeps 3.3% + 30¢ per card payment.</div>
       <div class="muted small">Customers see these with a QR code and a Pay button in their account. Venmo shows once it’s filled in.</div>`),
-    fold('business', 'Business info', esc(s.businessPhone), `${field('businessPhone', 'Phone on quotes and invoices')}${field('businessEmail', 'Email on quotes and invoices')}${field('website', 'Website link', 'Add your website')}`),
+    fold('business', 'Business info', esc(s.businessPhone), `${field('businessPhone', 'Phone on quotes and invoices')}${field('businessEmail', 'Email on quotes and invoices')}${field('businessAddress', 'Address on quotes and invoices')}${field('website', 'Website link', 'Add your website')}`),
     fold('snowprice', 'Snow pricing', `${num(s.snowIncluded)}" included · ${money(s.snowPerInch)}/inch over`, `<div class="muted small">For per-snow customers. When you mark a snow job done, type the inches; anything over the included inches is added to that invoice.</div>
       <div class="grid2">${field('snowIncluded', 'Inches included')}${field('snowPerInch', 'Price per extra inch ($)')}</div>`),
     fold('skips', 'Skips', `Deadline: ${esc(deadlineText(weekStart(new Date())))}`, `<div class="muted small">Customers get 1 free skip a month. They can skip until:</div>
