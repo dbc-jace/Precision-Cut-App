@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.16.17';
+import { createStore, newId } from './store.js?v=2026.11.16.18';
 
-const APP_VERSION = '2026.11.16.17'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.16.18'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -2172,12 +2172,10 @@ const A = {
   },
   quoteForCust(el) {
     const c = cust(el.dataset.cid); if (!c) return;
-    const p = priceOf(c.id), a = splitAddr(c);
+    const a = splitAddr(c);
     resetQuoteForm();
-    state.quoteDraft = { customerId: c.id, name: bothNames(c) || c.name, ...a, phone: c.phone || '', grassPrice: c.grass ? num(p.grass) : 0,
-      freq: { weekly: 'Weekly', biweekly: 'Every 2 weeks', oncall: 'On call' }[c.grassPlan] || 'Weekly',
-      snowPrice: c.snow ? num(c.snowPlan === 'seasonal' ? p.season : p.snow) : 0, snowPlan: c.snowPlan || 'perSnow', notes: '' };
-    state.quoteSel = builtIns(c).map((x) => x.id);
+    // Just their info; the items (mowing, snow, add-ons) start blank.
+    state.quoteDraft = { customerId: c.id, name: bothNames(c) || c.name, ...a, phone: c.phone || '', notes: '' };
     state.tab = 'quotes'; state.quoteId = null; render(); scrollTo(0, 0);
   },
   quoteDraftClear() { resetQuoteForm(); render(); },
