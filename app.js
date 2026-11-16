@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.15.1';
+import { createStore, newId } from './store.js?v=2026.11.15.2';
 
-const APP_VERSION = '2026.11.15.1'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.15.2'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -317,17 +317,36 @@ const ledgerHtml = (rows) => `<div class="list">${rows.map((r) => `<div class="l
 const visitLines = (v) => [{ desc: chargeLabel(v), amount: v.price }, ...(v.addons || []).map((a) => ({ desc: a.name, amount: a.price }))];
 // One running statement per customer (not a PDF per invoice): same file name every time, so it replaces the old one.
 // It starts Jan 1 each year (or the day Jace starts a fresh statement); anything owed from before carries over as one line.
-function statementStart(c) { const jan1 = ymd(new Date()).slice(0, 4) + '-01-01'; return c?.statementFrom && c.statementFrom > jan1 ? c.statementFrom : jan1; }
-function statementRows(cid) {
-  const L = ledgerFor(cid), start = statementStart(cust(cid));
-  const before = L.rows.filter((r) => r.date < start), rows = L.rows.filter((r) => r.date >= start);
-  const opening = before.length ? before[before.length - 1].bal : 0;
-  if (Math.abs(opening) > 0.004) rows.unshift({ date: start, desc: opening > 0 ? 'Balance carried over' : 'Credit carried over', amt: opening, bal: opening, pay: opening < 0, carry: true });
-  return { ...L, start, rows };
+// Statements: one per year for each customer (Jan 1 to Dec 31). Jace can also start a separate one on any day
+// (customer.statementBreaks). Old ones are never lost: each is rebuilt from the records whenever it's opened.
+// Anything owed from before a statement carries over as one line.
+const addDays = (d, n) => { const x = parseYmd(d); x.setDate(x.getDate() + n); return ymd(x); };
+const statementBreaks = (c) => [...new Set([...(Array.isArray(c?.statementBreaks) ? c.statementBreaks : []), ...(c?.statementFrom ? [c.statementFrom] : [])])].filter(Boolean).sort();
+function statementPeriods(cid) {
+  const c = cust(cid), now = today(), rows = ledgerFor(cid).rows;
+  const firstYear = Math.min(Number(now.slice(0, 4)), ...rows.map((r) => Number(r.date.slice(0, 4))));
+  const starts = new Set(statementBreaks(c).filter((d) => d <= now));
+  for (let y = firstYear; y <= Number(now.slice(0, 4)); y++) starts.add(`${y}-01-01`);
+  const list = [...starts].sort().map((start, i, arr) => {
+    const end = i + 1 < arr.length ? addDays(arr[i + 1], -1) : `${start.slice(0, 4)}-12-31`;
+    return { start, end: end.slice(0, 4) !== start.slice(0, 4) ? `${start.slice(0, 4)}-12-31` : end };
+  });
+  return list.map((p) => ({ ...p, current: p.start <= now && now <= p.end, whole: p.start.endsWith('-01-01') && p.end.endsWith('-12-31') }))
+    .filter((p) => p.current || rows.some((r) => r.date >= p.start && r.date <= p.end)).reverse();
 }
-async function statementFile(cid) {
-  const c = cust(cid) || {}, s = settings(), st = statementRows(cid);
-  const bal = st.rows.length ? st.rows[st.rows.length - 1].bal : 0;
+const currentPeriod = (cid) => statementPeriods(cid).find((p) => p.current) || statementPeriods(cid)[0];
+const periodName = (p) => p.whole ? p.start.slice(0, 4) : `${p.start.slice(0, 4)}: ${shortDate(p.start)} to ${p.current ? 'today' : shortDate(p.end)}`;
+const statementStart = (c) => currentPeriod(c.id).start;
+function statementRows(cid, p = currentPeriod(cid)) {
+  const L = ledgerFor(cid);
+  const before = L.rows.filter((r) => r.date < p.start), rows = L.rows.filter((r) => r.date >= p.start && r.date <= p.end);
+  const opening = before.length ? before[before.length - 1].bal : 0;
+  if (Math.abs(opening) > 0.004) rows.unshift({ date: p.start, desc: opening > 0 ? 'Balance carried over' : 'Credit carried over', amt: opening, bal: opening, pay: opening < 0, carry: true });
+  return { ...L, start: p.start, end: p.end, period: p, rows, closing: rows.length ? rows[rows.length - 1].bal : opening };
+}
+async function statementFile(cid, p = currentPeriod(cid)) {
+  const c = cust(cid) || {}, s = settings(), st = statementRows(cid, p);
+  const bal = st.closing;
   const lines = [];
   st.rows.forEach((r) => {
     const v = r.id && visitOf(r.id);
@@ -336,10 +355,10 @@ async function statementFile(cid) {
   });
   if (!lines.length) lines.push({ desc: 'No charges yet', amount: 0 });
   const paid = bal <= 0.004;
-  const meta = [['Statement date', longDate(today())], ['Covers', `${shortDate(st.start)} to today`], paid ? ['Status', 'PAID'] : ['Due', 'Upon receipt']];
+  const meta = [['Statement date', longDate(today())], ['Covers', `${shortDate(st.start)}, ${st.start.slice(0, 4)} to ${p.current ? 'today' : shortDate(st.end) + ', ' + st.end.slice(0, 4)}`], paid ? ['Status', 'PAID'] : ['Due', 'Upon receipt']];
   const blob = await buildPdf('invoice', { title: 'STATEMENT', meta, name: bothNames(c) || c.name, to: [c.address, c.phone], lines, totalLabel: paid ? 'Balance' : 'Balance due', total: Math.max(0, bal), paid,
     terms: paid ? 'All paid up. Thank you!' : `Due upon receipt. Pay by Zelle to ${s.zelle}${s.venmo ? ' or by Venmo' : ''}.` });
-  return new File([blob], `Precision Cut Lawns - ${String(c.name || 'Statement').replace(/[\\/:*?"<>|]/g, '')}.pdf`, { type: 'application/pdf' });
+  return new File([blob], `Precision Cut Lawns - ${String(c.name || 'Statement').replace(/[\\/:*?"<>|]/g, '')} ${p.whole ? p.start.slice(0, 4) : `${p.start.slice(0, 4)} from ${shortDate(p.start)}`}.pdf`, { type: 'application/pdf' });
 }
 // What's on a quote, as lines. Used by the PDF and by the customer's Accept page.
 function quoteLinesOf(q) {
@@ -781,6 +800,16 @@ function viewCustomers() {
       <div style="text-align:right">${isAdmin() && priceOf(c.id).grass ? `<div class="b">${money(priceOf(c.id).grass)}</div>` : ''}<div class="muted small">${c.active ? svc(c) : 'Paused'}</div></div></button>`).join('')
       : `<div class="card empty">${state.customers.length ? 'No matches.' : 'No customers yet. Tap “+ Add” to enter your first one.'}</div>`}`;
 }
+// Every statement this customer has, newest first. Each opens as a PDF; nothing is lost when a new one starts.
+function statementsCard(c, admin) {
+  const ps = statementPeriods(c.id), breaks = statementBreaks(c);
+  return `<div class="card"><div class="b">Statements</div>
+    <div class="muted small">${admin ? 'One PDF a year, starting fresh every Jan 1. The newest one is what goes out with invoices.' : 'One for each year. Tap to open.'}</div>
+    <div class="list">${ps.map((p) => { const st = statementRows(c.id, p); return `<div class="line"><div class="grow"><div class="b">${esc(periodName(p))}${p.current ? ' <span class="pill p-green" style="font-size:11px;padding:1px 7px">Current</span>' : ''}</div>
+      <div class="muted small">${st.closing > 0.004 ? 'Balance ' + money(st.closing) : 'Paid up'}${admin && breaks.includes(p.start) ? ` · <button class="link" style="min-height:28px" data-a="joinStatement" data-cid="${c.id}" data-d="${p.start}">Merge into the one before</button>` : ''}</div></div>
+      <button class="btn btn-ghost btn-sm" data-a="custPdf" data-cid="${c.id}" data-start="${p.start}">Open PDF</button></div>`; }).join('')}</div>
+    ${admin ? `<button class="link" style="min-height:36px" data-a="freshStatement" data-cid="${c.id}">+ Start a separate statement today</button>` : ''}</div>`;
+}
 function viewCustomer() {
   const c = cust(state.custId), p = priceOf(c.id), admin = isAdmin();
   const u = admin && userForCustomer(c.id);
@@ -816,10 +845,7 @@ function viewCustomer() {
     ${owed.length ? `<div class="card"><div class="between"><div><div class="b">Owes ${money(owed.reduce((a, v) => a + num(v.total), 0))}</div><div class="muted small">${owed.length} unpaid invoice${owed.length === 1 ? '' : 's'}</div></div>
       ${owed.length > 1 ? `<button class="btn btn-lime btn-sm" data-a="markAllPaid" data-cid="${c.id}">Mark all paid</button>` : ''}</div></div>` : ''}
     ${visits.length ? `<details class="card"><summary class="b">Balance history (since ${shortDate(statementStart(c))})</summary>${ledgerHtml(statementRows(c.id).rows.slice().reverse())}</details>` : ''}
-    <div class="card"><div class="between"><div><div class="b">Statement PDF</div><div class="muted small">One PDF that updates every time. Starts fresh Jan 1${c.statementFrom && c.statementFrom > ymd(new Date()).slice(0, 4) + '-01-01' ? `; this one started ${shortDate(c.statementFrom)}` : ''}.</div></div>
-      <button class="btn btn-ghost btn-sm" data-a="custPdf" data-cid="${c.id}">Open</button></div>
-      <div class="flex wrap"><button class="link" style="min-height:32px" data-a="freshStatement" data-cid="${c.id}">Start a fresh statement today</button>
-      ${c.statementFrom && c.statementFrom > ymd(new Date()).slice(0, 4) + '-01-01' ? `<button class="link" style="min-height:32px;margin-left:auto" data-a="undoFreshStatement" data-cid="${c.id}">Undo</button>` : ''}</div></div>
+    ${statementsCard(c, true)}
     <div class="card list">${visits.length ? visits.map((v) => `<div class="line"><div class="grow"><div>${shortDate(v.date)} · ${esc(chargeLabel(v))}</div><div class="muted small">${esc(v.invoiceNo)}${v.paid && v.paidAt ? ' · ' + paidLabel(v.paidVia).toLowerCase() + ' ' + shortDate(ymd(new Date(v.paidAt))) + (v.cardFeePaid ? ` (+${money(v.cardFeePaid)} fee covered)` : '') : v.customerSaysPaid ? ' · says they paid' : ''}</div></div>
         <span class="flex"><b>${money(v.total)}</b>${v.paid ? `${pill('p-green', 'Paid')}<button class="link" style="margin-left:8px;min-height:32px" data-a="markUnpaid" data-id="${v.id}">Undo</button>`
           : `<button class="btn btn-lime btn-sm" data-a="markPaid" data-id="${v.id}">${v.customerSaysPaid ? 'Confirm paid' : 'Mark paid'}</button><button class="btn btn-ghost btn-sm" data-a="sendInvoice" data-id="${v.id}">${v.sentAt ? 'Resend' : 'Send'}</button>`}</span></div>`).join('') : '<div class="empty">No invoices yet.</div>'}</div>
@@ -1134,7 +1160,8 @@ function renderCustomerHome() {
           ${L.unpaid.every((v) => v.customerSaysPaid) ? '<div class="okbar">Thanks! I’ll confirm once it comes through.</div>' : `<button class="btn btn-ghost" data-a="custPaid" data-cid="${c.id}">I’ve paid my balance (Zelle / Venmo)</button>`}`
           : '<div class="okbar">You’re all paid up. Thank you!</div>'}
         ${L.rows.length ? `<div class="lbl" style="margin-top:6px">History this year</div>${ledgerHtml(statementRows(c.id).rows.slice(-12).reverse())}` : ''}
-        <button class="btn btn-ghost" data-a="custPdf" data-cid="${c.id}">View statement (PDF)</button></div>
+</div>
+      ${statementsCard(c, false)}
       <div class="sec">How to pay</div>
       <div class="card">
         ${venmoUrl ? `<a class="btn btn-primary" href="${esc(venmoUrl)}" target="_blank" rel="noopener">Pay with Venmo</a><div class="qr">${qrSvg(venmoUrl)}</div>` : ''}
@@ -1850,11 +1877,15 @@ const A = {
   acceptQuote(el) { acceptQuotePage(el); },
   freshStatement(el) {
     const c = cust(el.dataset.cid); if (!c) return;
-    if (!confirm(`Start ${first(c.name)}’s statement fresh from today? Anything still owed carries over as one line. Nothing is deleted.`)) return;
-    store.update('customers', c.id, { statementFrom: today() }); toast('Statement starts today');
+    if (statementBreaks(c).includes(today())) return toast('A statement already starts today');
+    if (!confirm(`Start a separate statement for ${first(c.name)} from today? The one before stays saved and you can still open it. Anything owed carries over as one line.`)) return;
+    store.update('customers', c.id, { statementBreaks: [...statementBreaks(c), today()].sort(), statementFrom: '' }); toast('New statement starts today');
   },
-  undoFreshStatement(el) { store.update('customers', el.dataset.cid, { statementFrom: '' }); toast('Statement starts Jan 1 again'); },
-  async custPdf(el) { await run(async () => { const f = await statementFile(el.dataset.cid); const url = URL.createObjectURL(f); window.open(url, '_blank') || (location.href = url); }); },
+  joinStatement(el) {
+    const c = cust(el.dataset.cid); if (!c || !confirm('Merge this statement back into the one before it?')) return;
+    store.update('customers', c.id, { statementBreaks: statementBreaks(c).filter((d) => d !== el.dataset.d), statementFrom: '' }); toast('Merged');
+  },
+  async custPdf(el) { await run(async () => { const cid = el.dataset.cid, p = statementPeriods(cid).find((x) => x.start === el.dataset.start) || currentPeriod(cid); const f = await statementFile(cid, p); const url = URL.createObjectURL(f); window.open(url, '_blank') || (location.href = url); }); },
   payCard(el) {
     if (settings().cardFeeOption === false) return A.payCardGo(el);
     state.sheet = { kind: 'payCard', cid: el.dataset.cid }; renderSheet();
@@ -2097,14 +2128,14 @@ function renderQuotePage(err = '') {
   if (!q) { app.innerHTML = `${head}<main class="no-tabs">${err ? `<div class="card"><div class="warnbar">${esc(err)}</div></div>` : '<p class="center muted" style="padding:40px">Loading your quote…</p>'}</main>`; return; }
   const lines = quoteLinesOf(q), total = lines.reduce((a, l) => a + num(l.amount), 0);
   let action;
-  if (q.acceptedAt) action = `<div class="okbar">✓ Accepted ${shortDate(ymd(new Date(q.acceptedAt)))}${q.acceptedName ? ' by ' + esc(q.acceptedName) : ''}. Thank you! Jace will text you soon to get you on the schedule.</div>`;
+  if (q.acceptedAt) action = `<div class="okbar">✓ Accepted ${shortDate(ymd(new Date(q.acceptedAt)))}${q.acceptedName ? ' by ' + esc(q.acceptedName) : ''}. Thank you! Precision Cut Lawns will contact you soon.</div>`;
   else if (q.expired) action = `<div class="warnbar">This quote expired ${shortDate(q.until)}. Text ${esc(b.phone)} for an updated one.</div>`;
   else action = `<div class="b">Accept this quote</div>
       <label class="f"><span class="lbl">Your name</span><input class="inp" id="qa_name" autocomplete="name" value="${esc(q.name)}"></label>
       <label class="f"><span class="lbl">Your phone number</span><input class="inp" id="qa_phone" type="tel" inputmode="tel" autocomplete="tel" value="${esc(q.phone || '')}"></label>
       ${err ? `<div class="warnbar">${esc(err)}</div>` : ''}
       <button class="btn btn-lime" data-a="acceptQuote">Accept quote</button>
-      <div class="muted small">No account needed. Jace gets your name and number and will text you to set things up.</div>`;
+      <div class="muted small">No account needed. Precision Cut Lawns will contact you soon to get you on the schedule.</div>`;
   app.innerHTML = `${head}<main class="no-tabs">
     <div class="card"><div class="between"><div class="muted small">Quote Q-${esc(q.number)} · ${shortDate(q.date)}</div><div class="muted small">Good until ${shortDate(q.until)}</div></div>
       <div class="list">${lines.map((l) => `<div class="line"><span>${esc(l.desc)}</span><b>${money(l.amount)}</b></div>`).join('')}
@@ -2123,7 +2154,19 @@ async function acceptQuotePage(btn) {
   if (name.length < 2) return renderQuotePage('Type your name.');
   if (phone.replace(/\D/g, '').replace(/^1(?=\d{10}$)/, '').length !== 10) return renderQuotePage('Type a 10-digit phone number.');
   btn.disabled = true; btn.textContent = 'Accepting…';
-  try { pubQuote = await quoteCall('acceptQuote', { token: quoteToken, name, phone }); renderQuotePage(); }
+  try {
+    pubQuote = await quoteCall('acceptQuote', { token: quoteToken, name, phone }); renderQuotePage();
+    // Same alert emails as sign-ups (FormSubmit): one for the quote, one for the new customer.
+    const al = pubQuote.alert;
+    if (al?.to) {
+      const when = new Date().toLocaleString('en-US');
+      await sendAlert(al.to, `Quote accepted: ${name}`, { Name: name, Phone: phone, Address: al.address || '(not on the quote)', Quote: `Q-${al.number}`, Prices: al.lines.join(' · '), Notes: al.notes || '-', When: when })
+        .catch((e) => console.error('Quote alert NOT sent:', e?.message || e));
+      if (al.isNew) await sendAlert(al.to, `New customer: ${name}`, { Name: name, Phone: phone, Address: al.address || '(add it)', From: `Accepted quote Q-${al.number}`, When: when,
+        'Next step': 'Open the app > Customers > ' + name + ' > Edit to add their email, deck height and notes.' })
+        .catch((e) => console.error('New customer alert NOT sent:', e?.message || e));
+    }
+  }
   catch (e) { console.error(e); renderQuotePage(e.message || 'Couldn’t accept. Check your signal and try again.'); }
 }
 

@@ -1,19 +1,15 @@
 // Quotes: a private link the customer opens without an account (APP_URL#quote=<token>).
 //  - getQuote: shows the quote on that page.
 //  - acceptQuote: they type their name and phone and tap Accept. The quote is marked accepted, a customer
-//    record is made from it (Jace fills in the rest), and Jace gets two emails: "Quote accepted" and "New customer".
+//    record is made from it (Jace fills in the rest). The page then sends Jace two alert emails ("Quote accepted" and
+//    "New customer") the same way sign-up alerts go out (FormSubmit to Settings > alert email).
 // No app login is created; Jace decides later whether to invite them.
 const { onCall, HttpsError } = require('firebase-functions/v2/https');
-const { onDocumentCreated } = require('firebase-functions/v2/firestore');
-const { defineSecret } = require('firebase-functions/params');
 const logger = require('firebase-functions/logger');
 const { getFirestore } = require('firebase-admin/firestore');
 
 const db = getFirestore();
 const APP_URL = 'https://app.precisioncutlawns.org/';
-// Only declared once email is set up, so deploys work before the Gmail password exists.
-const GMAIL_APP_PASSWORD = process.env.MAIL_FROM ? defineSecret('GMAIL_APP_PASSWORD') : null;
-const MAIL_FROM = process.env.MAIL_FROM || ''; // the Gmail address the app password belongs to (functions/.env)
 const QUOTE_DAYS = 30;
 
 const ymd = (d) => d.toISOString().slice(0, 10);
@@ -73,29 +69,12 @@ exports.acceptQuote = onCall({ cors: true }, async (req) => {
     return { cid, isNew: !q.customerId };
   });
   const q = (await doc.ref.get()).data(), s = (await db.doc('settings/main').get()).data() || {};
+  let alert = null;
   if (made) {
     logger.info('Quote accepted', doc.id, 'customer', made.cid);
-    await queueMail(`Quote accepted: ${name}`,
-      `${name} accepted quote Q-${q.number}.\n\nPhone: ${phone}\nAddress: ${q.address || '(not on the quote)'}\n\n${quoteLines(q).join('\n')}${q.notes ? '\n\nNotes: ' + q.notes : ''}\n\nOpen the app: ${APP_URL}`)
-      .catch((e) => logger.error('Quote email failed', e));
-    if (made.isNew) await queueMail(`New customer: ${name}`,
-      `${name} was added to your customers from their accepted quote.\n\nPhone: ${phone}\nAddress: ${q.address || '(add it)'}\n\nOpen Customers in the app to fill in the rest (email, deck height, notes). No app login was sent; invite them from their page if you want.\n\n${APP_URL}`)
-      .catch((e) => logger.error('New customer email failed', e));
+    // Where Jace's alert emails go: the same address as sign-up alerts.
+    const owner = String(s.alertEmail || '').trim() || (await db.doc('meta/setup').get()).data()?.owner || '';
+    if (owner) alert = { to: owner, isNew: made.isNew, lines: quoteLines(q), number: q.number, address: q.address || '', notes: q.notes || '' };
   }
-  return publicQuote(q, s);
-});
-
-// Emails to Jace go through the mail collection; sendMail (below) sends them from his Gmail.
-// Until that's set up they just wait there, and nothing else breaks.
-const queueMail = (subject, text) => db.collection('mail').add({ subject, text, at: Date.now() });
-// Turned on once MAIL_FROM is in functions/.env and the GMAIL_APP_PASSWORD secret exists.
-if (process.env.MAIL_FROM) exports.sendMail = onDocumentCreated({ document: 'mail/{id}', secrets: [GMAIL_APP_PASSWORD] }, async (event) => {
-  const m = event.data?.data(); if (!m || m.sentAt) return;
-  const s = (await db.doc('settings/main').get()).data() || {};
-  const from = MAIL_FROM, to = s.businessEmail || from;
-  if (!from || !to) return logger.warn('Email alerts are not set up (MAIL_FROM)');
-  const nodemailer = require('nodemailer');
-  const t = nodemailer.createTransport({ service: 'gmail', auth: { user: from, pass: GMAIL_APP_PASSWORD.value().replace(/\s/g, '') } });
-  await t.sendMail({ from: `Precision Cut App <${from}>`, to, subject: m.subject, text: m.text });
-  await event.data.ref.update({ sentAt: Date.now(), to });
+  return { ...publicQuote(q, s), alert };
 });
