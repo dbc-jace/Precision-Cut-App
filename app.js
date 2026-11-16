@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.16.2';
+import { createStore, newId } from './store.js?v=2026.11.16.3';
 
-const APP_VERSION = '2026.11.16.2'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.16.3'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -823,10 +823,9 @@ function viewRoute() {
 /* ----- Customers ----- */
 // Header line: every customer counts, whether or not they have their own login.
 function custSummary() {
-  const active = state.customers.filter((c) => c.active).length, paused = state.customers.length - active;
   const onApp = state.customers.filter((c) => usersForCustomer(c.id).length).length;
   const on = state.customers.filter((c) => c.active), grass = on.filter((c) => c.grass).length, snow = on.filter((c) => c.snow).length;
-  return `${state.customers.length} total · ${grass} grass · ${snow} snow · ${active} active${paused ? ` · ${paused} paused` : ''}${isAdmin() ? ` · ${onApp} use the app` : ''}`;
+  return `${on.length} total · ${grass} grass · ${snow} snow${isAdmin() ? ` · ${onApp} use the app` : ''}`;
 }
 function viewCustomers() {
   if (state.editing) return viewCustomerEdit();
