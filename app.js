@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.16.7';
+import { createStore, newId } from './store.js?v=2026.11.16.8';
 
-const APP_VERSION = '2026.11.16.7'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.16.8'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -83,7 +83,7 @@ const deadlineText = (weekId) => skipDeadline(weekId).toLocaleString('en-US', { 
 /* ---------- defaults ---------- */
 const DEFAULTS = {
   alertEmail: 'jace.precisioncutlawns@gmail.com',
-  businessName: 'Precision Cut Lawns', businessPhone: '224-334-8532', businessEmail: 'jace.precisioncutlawns@gmail.com', businessAddress: '23510 N Cottage Rd, Hawthorn Woods, IL 60047', website: '', zelle: '224-334-8532', venmo: '', zelleQr: '',
+  businessName: 'Precision Cut Lawns', businessPhone: '224-334-8532', businessEmail: 'jace.precisioncutlawns@gmail.com', businessAddress: '23510 N Cottage Rd, Hawthorn Woods, IL 60047', website: 'precisioncutlawns.org', zelle: '224-334-8532', venmo: '', zelleQr: '',
   skipDay: 3, skipTime: '18:00',
   reminderMsg: 'Hi {first}, it\'s Jace with Precision Cut Lawns. Your lawn is scheduled to be mowed this week ({week}). Need to skip? Tap here by {deadline}: {link}',
   oncallMsg: 'Hi, it\'s Jace with Precision Cut Lawns. Would you like your grass cut today?',
