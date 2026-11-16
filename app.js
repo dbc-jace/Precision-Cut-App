@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.16.8';
+import { createStore, newId } from './store.js?v=2026.11.16.9';
 
-const APP_VERSION = '2026.11.16.8'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.16.9'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -1001,6 +1001,41 @@ function viewCustomerEdit() {
 }
 
 /* ----- Money ----- */
+// Money in, by the day it was received: paid invoices (not the ones paid from credit) plus payments entered by hand.
+function incomeEntries() {
+  return [...state.visits.filter((v) => v.paid && v.paidAt && !v.creditFrom).map((v) => ({ date: ymd(new Date(v.paidAt)), amt: num(v.total), who: v.customerName, what: `Payment for ${chargeLabel(v)} (${shortDate(v.date)})`, via: paidLabel(v.paidVia), inv: v.invoiceNo })),
+    ...(state.payments || []).map((p) => ({ date: p.date, amt: num(p.amount), who: cust(p.customerId)?.name || '', what: p.note || 'Payment', via: paidLabel(p.via), inv: '' }))];
+}
+// Every year before this one that has anything in it. On Jan 1 this year joins the list on its own.
+function pastYears() {
+  const now = Number(today().slice(0, 4)), ys = new Set();
+  const add = (d) => { const y = Number(String(d || '').slice(0, 4)); if (y >= 2020 && y < now) ys.add(y); };
+  state.visits.forEach((v) => add(v.date)); incomeEntries().forEach((x) => add(x.date)); state.expenses.forEach((e) => add(e.date));
+  return [...ys].sort((a, b) => b - a);
+}
+function yearStats(y) {
+  const inY = (d) => String(d || '').startsWith(y + '-');
+  const visits = state.visits.filter((v) => inY(v.date));
+  const income = incomeEntries().filter((x) => inY(x.date)).reduce((a, x) => a + x.amt, 0);
+  const expenses = state.expenses.filter((e) => inY(e.date)).reduce((a, e) => a + num(e.amount), 0);
+  return { visits, billed: visits.reduce((a, v) => a + num(v.total), 0), income, expenses, profit: income - expenses,
+    customers: new Set(visits.map((v) => v.customerId)).size, unpaid: visits.filter((v) => !v.paid).reduce((a, v) => a + num(v.total), 0) };
+}
+// A year as a spreadsheet, line by line: every charge and add-on, every payment, every expense, then totals.
+function yearCsv(y) {
+  const inY = (d) => String(d || '').startsWith(y + '-'), st = yearStats(y);
+  const rows = [['Section', 'Date', 'Customer / Vendor', 'Item', 'Category', 'Amount', 'Invoice #', 'Status']];
+  [...st.visits].sort((a, b) => a.date.localeCompare(b.date) || String(a.customerName).localeCompare(String(b.customerName))).forEach((v) => {
+    const status = v.paid ? (v.creditFrom ? 'Paid from credit' : `Paid ${v.paidAt ? ymd(new Date(v.paidAt)) : ''} ${paidLabel(v.paidVia)}`.trim()) : 'UNPAID';
+    const cat = v.type === 'snow' ? 'Snow' : v.type === 'grass' ? 'Lawn' : v.type === 'season' ? 'Snow season' : 'Other work';
+    visitLines(v).forEach((l, i) => rows.push(['Charge', v.date, v.customerName, i ? `+ ${l.desc}` : l.desc, cat, num(l.amount), v.invoiceNo, status]));
+  });
+  incomeEntries().filter((x) => inY(x.date)).sort((a, b) => a.date.localeCompare(b.date)).forEach((x) => rows.push(['Payment received', x.date, x.who, x.what, x.via, x.amt, x.inv, '']));
+  state.expenses.filter((e) => inY(e.date)).sort((a, b) => a.date.localeCompare(b.date)).forEach((e) => rows.push(['Expense', e.date, e.vendor || '', e.desc, e.category, -num(e.amount), '', '']));
+  rows.push([], ['Total billed', '', '', `${st.visits.length} invoice${st.visits.length === 1 ? '' : 's'}, ${st.customers} customer${st.customers === 1 ? '' : 's'}`, '', st.billed], ['Total received', '', '', '', '', st.income],
+    ['Total expenses', '', '', '', '', -st.expenses], ['Profit', '', '', '', '', st.profit], ['Still unpaid from ' + y, '', '', '', '', st.unpaid]);
+  return rows.map((r) => r.map((x) => `"${String(x ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
+}
 function viewMoney() {
   const tab = (k, l) => `<button class="${state.moneyTab === k ? 'on' : ''}" data-a="moneyTab" data-v="${k}">${l}</button>`;
   const paid = state.visits.filter((v) => v.paid && v.paidAt && !v.creditFrom);
@@ -1059,7 +1094,18 @@ function viewMoney() {
       ${ex.length ? `<div class="card list">${ex.slice(0, 100).map((e) => `<div class="line"><div class="grow"><div class="b">${esc(e.desc || e.category)}</div><div class="muted small">${esc(e.category)} · ${shortDate(e.date)}</div></div>
         <b>${money(e.amount)}</b><button class="link danger" style="margin-left:10px;min-height:32px" data-a="delExpense" data-id="${e.id}" aria-label="Delete expense">✕</button></div>`).join('')}</div>` : '<div class="card empty">No expenses yet.</div>'}`;
   }
-  return `<div class="seg">${tab('overview', 'Overview')}${tab('unpaid', 'Unpaid')}${tab('expenses', 'Expenses')}</div>${body}`;
+  if (state.moneyTab === 'years') {
+    const ys = pastYears(), now = today().slice(0, 4);
+    body = `<div class="muted small">Every year before ${now}. On Jan 1, ${now} moves here on its own and Overview starts the new year.</div>
+      ${ys.length ? ys.map((y) => { const st = yearStats(y); return `<div class="card" style="gap:10px"><div class="between"><div class="b" style="font-size:20px">${y}</div><div class="muted small">${st.visits.length} job${st.visits.length === 1 ? '' : 's'} · ${st.customers} customer${st.customers === 1 ? '' : 's'}</div></div>
+        <div class="kpis"><div class="kpi in"><div class="lbl">Income</div><div class="n">${money(st.income)}</div></div>
+          <div class="kpi"><div class="lbl">Expenses</div><div class="n">${money(st.expenses)}</div></div>
+          <div class="kpi profit"><div class="lbl">Profit</div><div class="n">${st.profit < 0 ? '−' : ''}${money(Math.abs(st.profit))}</div></div></div>
+        <div class="muted small">Billed ${money(st.billed)}${st.unpaid > 0.004 ? ` · ${money(st.unpaid)} from ${y} still unpaid` : ''}</div>
+        <button class="btn btn-ghost" data-a="yearCsv" data-y="${y}">Download ${y} (CSV, every line item)</button></div>`; }).join('')
+        : `<div class="card empty">No past years yet. Your first one shows up here on Jan 1, ${Number(now) + 1}.</div>`}`;
+  }
+  return `<div class="seg">${tab('overview', 'Overview')}${tab('unpaid', 'Unpaid')}${tab('expenses', 'Expenses')}${tab('years', 'Past years')}</div>${body}`;
 }
 
 /* ----- Quotes ----- */
@@ -2043,6 +2089,7 @@ const A = {
   },
   acceptQuote(el) { acceptQuotePage(el); },
   async sendStatement(el) { await run(() => sendInvoice(null, el.dataset.cid)); },
+  yearCsv(el) { const y = el.dataset.y; download(`precision-cut-${y}.csv`, yearCsv(y), 'text/csv'); },
   custSeg(el) { state.custSeg = el.dataset.v; render(); },
   openPayment(el) { state.sheet = { kind: 'payment', cid: el.dataset.cid }; renderSheet(); },
   async savePayment() {
