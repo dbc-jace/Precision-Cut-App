@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.15.2';
+import { createStore, newId } from './store.js?v=2026.11.15.3';
 
-const APP_VERSION = '2026.11.15.2'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.15.3'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -341,7 +341,13 @@ function statementRows(cid, p = currentPeriod(cid)) {
   const L = ledgerFor(cid);
   const before = L.rows.filter((r) => r.date < p.start), rows = L.rows.filter((r) => r.date >= p.start && r.date <= p.end);
   const opening = before.length ? before[before.length - 1].bal : 0;
-  if (Math.abs(opening) > 0.004) rows.unshift({ date: p.start, desc: opening > 0 ? 'Balance carried over' : 'Credit carried over', amt: opening, bal: opening, pay: opening < 0, carry: true });
+  if (Math.abs(opening) > 0.004) {
+    // Say where it came from: last year's statement, or the statement just before this one.
+    const prevEnd = addDays(p.start, -1), brk = statementBreaks(cust(cid)).filter((d) => d < p.start).pop() || `${prevEnd.slice(0, 4)}-01-01`;
+    const prevStart = brk.slice(0, 4) === prevEnd.slice(0, 4) ? brk : `${prevEnd.slice(0, 4)}-01-01`;
+    const from = prevStart.endsWith('-01-01') && prevEnd.endsWith('-12-31') ? `${prevEnd.slice(0, 4)} statement` : `previous statement (${shortDate(prevStart)} to ${shortDate(prevEnd)}, ${prevEnd.slice(0, 4)})`;
+    rows.unshift({ date: p.start, desc: `${opening > 0 ? 'Previous balance' : 'Previous credit'} from ${from}`, amt: opening, bal: opening, pay: opening < 0, carry: true });
+  }
   return { ...L, start: p.start, end: p.end, period: p, rows, closing: rows.length ? rows[rows.length - 1].bal : opening };
 }
 async function statementFile(cid, p = currentPeriod(cid)) {
@@ -356,6 +362,8 @@ async function statementFile(cid, p = currentPeriod(cid)) {
   if (!lines.length) lines.push({ desc: 'No charges yet', amount: 0 });
   const paid = bal <= 0.004;
   const meta = [['Statement date', longDate(today())], ['Covers', `${shortDate(st.start)}, ${st.start.slice(0, 4)} to ${p.current ? 'today' : shortDate(st.end) + ', ' + st.end.slice(0, 4)}`], paid ? ['Status', 'PAID'] : ['Due', 'Upon receipt']];
+  const carry = st.rows.find((r) => r.carry);
+  if (carry) meta.splice(2, 0, ['Previous balance', (carry.amt < 0 ? '-' : '') + money2(Math.abs(carry.amt))]);
   const blob = await buildPdf('invoice', { title: 'STATEMENT', meta, name: bothNames(c) || c.name, to: [c.address, c.phone], lines, totalLabel: paid ? 'Balance' : 'Balance due', total: Math.max(0, bal), paid,
     terms: paid ? 'All paid up. Thank you!' : `Due upon receipt. Pay by Zelle to ${s.zelle}${s.venmo ? ' or by Venmo' : ''}.` });
   return new File([blob], `Precision Cut Lawns - ${String(c.name || 'Statement').replace(/[\\/:*?"<>|]/g, '')} ${p.whole ? p.start.slice(0, 4) : `${p.start.slice(0, 4)} from ${shortDate(p.start)}`}.pdf`, { type: 'application/pdf' });
