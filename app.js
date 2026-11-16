@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.16.4';
+import { createStore, newId } from './store.js?v=2026.11.16.5';
 
-const APP_VERSION = '2026.11.16.4'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.16.5'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -448,14 +448,17 @@ async function sharePdf(file, text, phone) {
 }
 // The old invoice text had Zelle-only pay instructions built in; how to pay is now added separately.
 const OLD_INVOICE_MSG = 'Hi {first}, thanks for choosing Precision Cut Lawns! Your invoice for {total} is attached. Pay by Zelle to {zelle}{venmo}, or in your account: {link}';
-async function sendInvoice(v) {
+// v = the job just billed. Without one (the "Send statement" button), it sends their current balance as is.
+async function sendInvoice(v, cid = v?.customerId) {
   const s = settings();
-  const c = cust(v.customerId) || {};
-  const L = ledgerFor(v.customerId);
-  const vars = { first: first(v.customerName), zelle: s.zelle, venmo: s.venmo ? ' or Venmo ' + s.venmo : '', link: appLink(), phone: s.businessPhone };
+  const c = cust(cid) || {};
+  const L = ledgerFor(cid);
+  const vars = { first: first(c.name || v?.customerName), zelle: s.zelle, venmo: s.venmo ? ' or Venmo ' + s.venmo : '', link: appLink(), phone: s.businessPhone };
   let text;
-  const isPaid = v.paid || L.owe <= 0.004;
-  if (isPaid) {
+  const isPaid = v ? v.paid || L.owe <= 0.004 : L.owe <= 0.004;
+  if (!v && isPaid) {
+    text = `Hi ${vars.first}, here’s your statement from Precision Cut Lawns. You’re all paid up${L.credit > 0.004 ? ` and have ${money(L.credit)} credit toward upcoming visits` : ''}. Thank you!`;
+  } else if (isPaid) {
     // Paid: a thank-you, no "pay by". Anything older still open is just mentioned.
     text = fill(s.paidMsg || DEFAULTS.paidMsg, { ...vars, total: money(v.total) });
     if (L.owe > 0.004) text += `\n\nYour remaining balance is ${money(L.owe)}.`;
@@ -466,9 +469,9 @@ async function sendInvoice(v) {
     const ways = [];
     if (s.squareOn && store.call) {
       try {
-        const { url } = await store.call('payBalance', { customerId: v.customerId });
+        const { url } = await store.call('payBalance', { customerId: cid });
         ways.push(`Card or Apple Pay: ${url}`);
-        if (s.cardFeeOption !== false) { const f = await store.call('payBalance', { customerId: v.customerId, coverFee: true }); ways.push(`Or ${money(withFee(L.owe))} to cover the 3.3% card fee (optional): ${f.url}`); }
+        if (s.cardFeeOption !== false) { const f = await store.call('payBalance', { customerId: cid, coverFee: true }); ways.push(`Or ${money(withFee(L.owe))} to cover the 3.3% card fee (optional): ${f.url}`); }
       } catch (e) { console.error(e); toast('Couldn’t make the card pay link. Sending without it.'); }
     }
     if (s.zelle) ways.push(`Zelle: ${s.zelle}`);
@@ -476,8 +479,8 @@ async function sendInvoice(v) {
     if (ways.length) text += `\n\nHow to pay ${money(L.owe)}:\n${ways.join('\n')}`;
     text += `\n\nOr pay in your account: ${appLink()}`;
   }
-  const sent = await sharePdf(await statementFile(v.customerId), text, textTo(c));
-  if (sent) { await store.update('visits', v.id, { sentAt: Date.now() }); toast(isPaid ? 'Receipt ready to send' : 'Invoice ready to send'); }
+  const sent = await sharePdf(await statementFile(cid), text, textTo(c));
+  if (sent) { if (v) await store.update('visits', v.id, { sentAt: Date.now() }); else L.unpaid.forEach((x) => store.update('visits', x.id, { sentAt: Date.now() })); toast(isPaid ? 'Receipt ready to send' : 'Invoice ready to send'); }
 }
 function newInvoiceNo() { const d = new Date(); return `PC-${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`; }
 function createVisit({ customerId, type, price, addons = [], desc, stopId, date = today(), skipCredit = false }) {
@@ -942,6 +945,7 @@ function viewCustomer() {
       : `<div class="muted">Give ${esc(first(c.name))} a login to see their schedule, skip, request snow removal and pay invoices.</div>
         <button class="btn btn-primary" data-a="inviteCustomer" data-cid="${c.id}">Invite to the app</button><div class="muted small">Sends a link. They sign up with any email. Optional: you can schedule, invoice by text and mark paid here without them ever having a login.</div>`}</div>
     <div class="sec">Invoices</div>
+    <button class="btn btn-primary" data-a="sendStatement" data-cid="${c.id}">Send ${esc(first(c.name))} their statement${ledgerFor(c.id).owe > 0.004 ? ` (owes ${money(ledgerFor(c.id).owe)})` : ''}</button>
     ${owed.length ? `<div class="card"><div class="between"><div><div class="b">Owes ${money(owed.reduce((a, v) => a + num(v.total), 0))}</div><div class="muted small">${owed.length} unpaid invoice${owed.length === 1 ? '' : 's'}</div></div>
       ${owed.length > 1 ? `<button class="btn btn-lime btn-sm" data-a="markAllPaid" data-cid="${c.id}">Mark all paid</button>` : ''}</div></div>` : ''}
     <div class="card"><div class="between"><div><div class="b">Record a payment</div><div class="muted small">Cash for a few weeks or a month up front? It pays the oldest visits first; the rest is credit for the next ones.</div></div>
@@ -2020,6 +2024,7 @@ const A = {
     renderSheet();
   },
   acceptQuote(el) { acceptQuotePage(el); },
+  async sendStatement(el) { await run(() => sendInvoice(null, el.dataset.cid)); },
   custSeg(el) { state.custSeg = el.dataset.v; render(); },
   openPayment(el) { state.sheet = { kind: 'payment', cid: el.dataset.cid }; renderSheet(); },
   async savePayment() {
