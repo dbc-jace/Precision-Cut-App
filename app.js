@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.16.5';
+import { createStore, newId } from './store.js?v=2026.11.16.6';
 
-const APP_VERSION = '2026.11.16.5'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.16.6'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -346,20 +346,23 @@ function ledgerFor(cid) {
   const rows = vs.map((v) => ({ date: v.date, sort: `${v.date}0${v.createdAt || 0}`, desc: chargeLabel(v), amt: num(v.total), id: v.id }));
   const groups = {};
   vs.filter((v) => v.paid && v.paidAt && !v.creditFrom).forEach((v) => {
-    const g = (groups[v.payGroup || `${v.paidAt}_${v.paidVia || ''}`] ??= { paidAt: v.paidAt, via: v.paidVia, amt: 0, fee: 0 });
-    g.amt += num(v.total); g.fee += num(v.cardFeePaid);
+    const g = (groups[v.payGroup || `${v.paidAt}_${v.paidVia || ''}`] ??= { paidAt: v.paidAt, via: v.paidVia, amt: 0, fee: 0, t: 0, vids: [] });
+    g.vids.push(v.id); g.amt += num(v.total); g.fee += num(v.cardFeePaid);
+    // When it was recorded (a job entered as paid for a date may carry that day's noon).
+    g.t = Math.max(g.t, v.paidAt > Date.now() ? v.createdAt || 0 : v.paidAt);
   });
-  Object.values(groups).forEach((g) => { const d = ymd(new Date(g.paidAt)); rows.push({ date: d, sort: `${d}1${g.paidAt}`, desc: paidLabel(g.via), amt: -g.amt, fee: g.fee, pay: true }); });
-  paymentsOf(cid).forEach((p) => rows.push({ date: p.date, sort: `${p.date}1${p.at || 0}`, desc: paidLabel(p.via) + (p.note ? ` (${p.note})` : ''), amt: -num(p.amount), pay: true, paymentId: p.id }));
+  Object.values(groups).forEach((g) => { const d = ymd(new Date(g.paidAt)); rows.push({ date: d, sort: `${d}1${g.paidAt}`, desc: paidLabel(g.via), amt: -g.amt, fee: g.fee, pay: true, t: g.t, vids: g.vids }); });
+  paymentsOf(cid).forEach((p) => rows.push({ date: p.date, sort: `${p.date}1${p.at || 0}`, desc: paidLabel(p.via) + (p.note ? ` (${p.note})` : ''), amt: -num(p.amount), pay: true, paymentId: p.id, t: p.at || 0 }));
   rows.sort((a, b) => a.sort.localeCompare(b.sort));
   let bal = 0; rows.forEach((r) => { bal = Math.round((bal + r.amt) * 100) / 100; r.bal = bal; });
   const unpaid = vs.filter((v) => !v.paid).sort((a, b) => a.date.localeCompare(b.date));
   const credit = Math.max(0, creditOf(cid, paymentsOf(cid), vs));
   return { rows, unpaid, credit, owe: Math.round(unpaid.reduce((a, v) => a + num(v.total), 0) * 100) / 100 };
 }
-const ledgerHtml = (rows) => `<div class="list">${rows.map((r) => `<div class="line"><div class="grow"><div>${shortDate(r.date)} · ${esc(r.desc)}${r.fee ? ` <span class="muted small">(+${money(r.fee)} fee covered)</span>` : ''}</div>
+const ledgerHtml = (rows, admin) => `<div class="list">${rows.map((r) => `<div class="line"><div class="grow"><div>${shortDate(r.date)} · ${esc(r.desc)}${r.fee ? ` <span class="muted small">(+${money(r.fee)} fee covered)</span>` : ''}</div>
     <div class="muted small">${r.bal < -0.004 ? 'Credit ' + money(-r.bal) : 'Balance ' + money(r.bal)}</div></div>
-    <b style="${r.pay ? 'color:#1D4A22' : ''}">${r.pay ? '−' : '+'}${money(Math.abs(r.amt))}</b></div>`).join('')}</div>`;
+    <b style="${r.pay ? 'color:#1D4A22' : ''}">${r.pay ? '−' : '+'}${money(Math.abs(r.amt))}</b>${admin && !r.carry ? `<button class="link danger" style="margin-left:10px;min-height:32px" aria-label="Delete this line"
+      ${r.id ? `data-a="delVisit" data-id="${r.id}"` : r.paymentId ? `data-a="delPayment" data-id="${r.paymentId}"` : `data-a="undoPayGroup" data-ids="${(r.vids || []).join(',')}"`}>✕</button>` : ''}</div>`).join('')}</div>`;
 const visitLines = (v) => [{ desc: chargeLabel(v), amount: v.price }, ...(v.addons || []).map((a) => ({ desc: a.name, amount: a.price }))];
 // One running statement per customer (not a PDF per invoice): same file name every time, so it replaces the old one.
 // It starts Jan 1 each year (or the day Jace starts a fresh statement); anything owed from before carries over as one line.
@@ -457,7 +460,10 @@ async function sendInvoice(v, cid = v?.customerId) {
   let text;
   const isPaid = v ? v.paid || L.owe <= 0.004 : L.owe <= 0.004;
   if (!v && isPaid) {
-    text = `Hi ${vars.first}, here’s your statement from Precision Cut Lawns. You’re all paid up${L.credit > 0.004 ? ` and have ${money(L.credit)} credit toward upcoming visits` : ''}. Thank you!`;
+    // Paid up: the paid message, thanking them for their latest payment.
+    const lastPay = L.rows.filter((r) => r.pay).sort((a, b) => (a.t || 0) - (b.t || 0)).pop();
+    text = lastPay ? fill(s.paidMsg || DEFAULTS.paidMsg, { ...vars, total: money(Math.abs(lastPay.amt)) }) : `Hi ${vars.first}, here’s your statement from Precision Cut Lawns. You’re all paid up. Thank you!`;
+    if (L.credit > 0.004) text += `\n\nYou have ${money(L.credit)} credit toward upcoming visits.`;
   } else if (isPaid) {
     // Paid: a thank-you, no "pay by". Anything older still open is just mentioned.
     text = fill(s.paidMsg || DEFAULTS.paidMsg, { ...vars, total: money(v.total) });
@@ -587,7 +593,7 @@ async function askToJoin(name, invite) {
   state.waiting = doc; state.access = 'none'; state.authMsg = '';
   waitForApproval(); render();
   try {
-    const owner = settings().alertEmail.trim() || (await store.getDoc('meta', 'setup'))?.owner;
+    const owner = settings().alertEmail.trim() || settings().businessEmail.trim() || DEFAULTS.alertEmail;
     if (owner) await sendAlert(owner, `Waiting to join: ${name}`, { Name: name, Email: email, When: new Date().toLocaleString('en-US'),
       'Next step': 'Open the app > Route > Requests and tap Approve.' });
   } catch (e) { console.error('Waiting-to-join alert email NOT sent:', e?.message || e); }
@@ -606,7 +612,7 @@ async function sendAlert(to, subject, fields) {
 }
 async function notifyJoined(name, email, joinedRole) {
   try {
-    const owner = settings().alertEmail.trim() || (await store.getDoc('meta', 'setup'))?.owner; if (!owner) return;
+    const owner = settings().alertEmail.trim() || settings().businessEmail.trim() || DEFAULTS.alertEmail;
     const role = joinedRole || state.account?.role || 'customer';
     await sendAlert(owner, `New ${role} sign-up: ${name}`, {
       Name: name, Email: email, Role: role, When: new Date().toLocaleString('en-US'),
@@ -953,11 +959,11 @@ function viewCustomer() {
       ${creditOf(c.id) > 0.004 ? `<div class="okbar">Credit: ${money(creditOf(c.id))} for upcoming visits</div>` : ''}
       ${paymentsOf(c.id).length ? `<div class="list">${[...paymentsOf(c.id)].sort((a, b) => b.date.localeCompare(a.date)).map((p) => `<div class="line"><div class="grow"><div>${shortDate(p.date)} · ${esc(paidLabel(p.via))}</div>${p.note ? `<div class="muted small">${esc(p.note)}</div>` : ''}</div>
         <b>${money(p.amount)}</b><button class="link danger" style="margin-left:10px;min-height:32px" data-a="delPayment" data-id="${p.id}" aria-label="Remove payment">✕</button></div>`).join('')}</div>` : ''}</div>
-    ${visits.length ? `<details class="card"><summary class="b">Balance history (since ${shortDate(statementStart(c))})</summary>${ledgerHtml(statementRows(c.id).rows.slice().reverse())}</details>` : ''}
+    ${visits.length ? `<details class="card"><summary class="b">Balance history (since ${shortDate(statementStart(c))})</summary>${ledgerHtml(statementRows(c.id).rows.slice().reverse(), true)}</details>` : ''}
     ${statementsCard(c, true)}
     <div class="card list">${visits.length ? visits.map((v) => `<div class="line"><div class="grow"><div>${shortDate(v.date)} · ${esc(chargeLabel(v))}</div><div class="muted small">${esc(v.invoiceNo)}${v.paid && v.paidAt ? ' · ' + paidLabel(v.paidVia).toLowerCase() + ' ' + shortDate(ymd(new Date(v.paidAt))) + (v.cardFeePaid ? ` (+${money(v.cardFeePaid)} fee covered)` : '') : v.customerSaysPaid ? ' · says they paid' : ''}</div></div>
         <span class="flex"><b>${money(v.total)}</b>${v.paid ? `${pill('p-green', 'Paid')}<button class="link" style="margin-left:8px;min-height:32px" data-a="markUnpaid" data-id="${v.id}">Undo</button>`
-          : `<button class="btn btn-lime btn-sm" data-a="markPaid" data-id="${v.id}">${v.customerSaysPaid ? 'Confirm paid' : 'Mark paid'}</button><button class="btn btn-ghost btn-sm" data-a="sendInvoice" data-id="${v.id}">${v.sentAt ? 'Resend' : 'Send'}</button>`}</span></div>`).join('') : '<div class="empty">No invoices yet.</div>'}</div>
+          : `<button class="btn btn-lime btn-sm" data-a="markPaid" data-id="${v.id}">${v.customerSaysPaid ? 'Confirm paid' : 'Mark paid'}</button><button class="btn btn-ghost btn-sm" data-a="sendInvoice" data-id="${v.id}">${v.sentAt ? 'Resend' : 'Send'}</button>`}<button class="link danger" style="margin-left:8px;min-height:32px" data-a="delVisit" data-id="${v.id}" aria-label="Delete">✕</button></span></div>`).join('') : '<div class="empty">No invoices yet.</div>'}</div>
     ${state.customers.length > 1 ? `<div class="sec">Duplicate?</div>
     <div class="card"><div class="muted small">If this person is in here twice, pick the other one. Their logins, invoices, route stops and messages move to ${esc(first(c.name))}, then the other one is deleted.</div>
       <label class="f"><span class="lbl">Merge into ${esc(c.name)}</span><select class="inp" id="merge_pick"><option value="">Pick the duplicate…</option>${[...state.customers].filter((x) => x.id !== c.id).sort(byName).map((x) => `<option value="${x.id}">${esc(bothNames(x))}${x.email ? ' · ' + esc(x.email) : ''}</option>`).join('')}</select></label>
@@ -1660,7 +1666,7 @@ const A = {
     const v = createVisit({ customerId: sh.cid, type: sh.type, price: val('sh_price'), addons, desc, stopId: sh.stopId, date: sh.date || (sh.type === 'snow' ? state.snowDate : today()), skipCredit: !!sh.paidVia });
     if (sh.stopId) store.update('stops', sh.stopId, { ...sh.stopData, visitId: v.id });
     // A job they already paid for: record the payment the same day.
-    if (sh.paidVia) await store.update('visits', v.id, { paid: true, paidAt: sh.job ? parseYmd(sh.date).getTime() + 12 * 3600e3 : Date.now(), paidVia: sh.paidVia });
+    if (sh.paidVia) await store.update('visits', v.id, { paid: true, paidAt: sh.job && sh.date !== today() ? parseYmd(sh.date).getTime() + 12 * 3600e3 : Date.now(), paidVia: sh.paidVia });
     state.sheet = null; renderSheet();
     if (sh.paidVia) { toast(sh.job ? 'Job saved as paid' : 'Done and paid'); if (el.dataset.send) await run(() => sendInvoice(visitOf(v.id) || { ...v, paid: true })); return; }
     if (el.dataset.send) await run(() => sendInvoice(v)); else toast('Saved. Send the invoice anytime.');
@@ -1885,11 +1891,20 @@ const A = {
     for (const v of owed) await store.update('visits', v.id, { paid: true, paidAt: at, paidVia: v.customerSaysPaid ? 'zelle-venmo' : 'cash' });
     toast(`Marked ${owed.length} paid`);
   },
-  delVisit(el) {
-    const v = visitOf(el.dataset.id);
-    if (!confirm(`Delete invoice ${v.invoiceNo} for ${money(v.total)}?`)) return;
-    store.remove('visits', v.id);
+  async delVisit(el) {
+    const v = visitOf(el.dataset.id); if (!v) return;
+    if (!confirm(`Delete “${chargeLabel(v)}” on ${shortDate(v.date)} (${money(v.total)})${v.paid && !v.creditFrom ? ', and the payment recorded with it' : ''}? This can't be undone.`)) return;
+    await store.remove('visits', v.id);
     if (v.stopId) store.update('stops', v.stopId, { visitId: null });
+    // If it was paid from credit, that credit is free again for anything still owed.
+    if (v.creditFrom) applyCredit(v.customerId, { visits: state.visits.filter((x) => x.customerId === v.customerId && x.id !== v.id) });
+    toast('Deleted');
+  },
+  undoPayGroup(el) {
+    const ids = (el.dataset.ids || '').split(',').filter(Boolean), vs = ids.map(visitOf).filter(Boolean);
+    if (!vs.length || !confirm(`Delete this payment (${money(vs.reduce((a, v) => a + num(v.total), 0))})? The ${vs.length === 1 ? 'charge it paid goes' : vs.length + ' charges it paid go'} back to unpaid.`)) return;
+    vs.forEach((v) => store.update('visits', v.id, { paid: false, paidAt: null, paidVia: null, payGroup: null, cardFeePaid: null }));
+    toast('Payment deleted');
   },
   addExpense() {
     const amount = num(val('e_amt'));

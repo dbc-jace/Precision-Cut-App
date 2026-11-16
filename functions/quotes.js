@@ -74,7 +74,7 @@ exports.acceptQuote = onCall({ cors: true }, async (req) => {
   if (made) {
     logger.info('Quote accepted', doc.id, 'customer', made.cid);
     // Where Jace's alert emails go: the same address as sign-up alerts.
-    const owner = String(s.alertEmail || '').trim() || (await db.doc('meta/setup').get()).data()?.owner || '';
+    const owner = String(s.alertEmail || '').trim() || String(s.businessEmail || '').trim() || 'jace.precisioncutlawns@gmail.com';
     if (owner) alert = { to: owner, isNew: made.isNew, lines: quoteLines(q), number: q.number, address: fullAddr(q), notes: q.notes || '' };
   }
   return { ...publicQuote(q, s), alert };
