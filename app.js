@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.16.14';
+import { createStore, newId } from './store.js?v=2026.11.16.15';
 
-const APP_VERSION = '2026.11.16.14'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.16.15'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -966,12 +966,13 @@ function viewCustomer() {
     <div class="card">
       <div class="between"><div><div class="b">Grass</div><div class="muted">${c.grass ? esc(grassPlan) : 'Not signed up'}</div></div>${admin && c.grass ? `<div class="b" style="text-align:right">${money(num(p.grass) + builtInTotal(c))}/cut${builtIns(c).length ? `<div class="muted small" style="font-weight:400">${money(p.grass)} + ${money(builtInTotal(c))} add-ons</div>` : ''}</div>` : ''}</div>
       ${admin && c.grass ? `<div><div class="lbl">Add-ons on every cut</div>
-        <div class="flex wrap" style="margin-top:4px">${[...state.addons].sort(byName).map((a) => `<button class="chip ${builtIns(c).some((x) => x.id === a.id) ? 'on' : ''}" data-a="custAddon" data-cid="${c.id}" data-id="${a.id}">${esc(a.name)} · ${money(a.price)}</button>`).join('') || '<span class="muted small">No add-ons yet.</span>'}</div>
+        <div class="flex wrap" style="margin-top:4px">${addonsOf('grass').map((a) => `<button class="chip ${builtIns(c).some((x) => x.id === a.id) ? 'on' : ''}" data-a="custAddon" data-cid="${c.id}" data-id="${a.id}">${esc(a.name)} · ${money(a.price)}</button>`).join('') || '<span class="muted small">No add-ons yet.</span>'}</div>
         <div class="flex" style="gap:6px;margin-top:6px"><input class="inp grow" id="ca_name" placeholder="New add-on, e.g. Edging"><input class="inp" id="ca_price" inputmode="decimal" placeholder="$" style="width:72px"><button class="btn btn-ghost btn-sm" data-a="custAddonNew" data-cid="${c.id}">Add</button></div>
         <div class="muted small">Ticked add-ons are on every mow and show on the bill as “${esc(grassLabel(c))} (with add-ons…)”.</div></div>` : ''}
       <div class="between" style="border-top:1px solid #ECEDEC;padding-top:10px"><div><div class="b">Snow</div><div class="muted">${c.snow ? (c.snowPlan === 'seasonal' ? 'Seasonal' : 'Per snow, on request') : 'Not signed up'}</div></div>
         ${admin && c.snow ? `<div class="b">${c.snowPlan === 'seasonal' ? money(p.season) + '/season' : money(p.snow) + '/visit'}</div>` : ''}</div>
       ${admin && c.snow && c.snowPlan === 'seasonal' ? `<button class="btn btn-ghost" data-a="billSeason" data-cid="${c.id}">Bill snow season (${money(p.season)})</button>` : ''}
+      ${admin ? `<button class="btn btn-ghost" data-a="quoteForCust" data-cid="${c.id}">+ New quote for ${esc(first(c.name))}</button>` : ''}
       ${admin ? `<button class="btn btn-ghost" data-a="otherWork" data-cid="${c.id}">+ Add a job (cleanup, extra work…)</button>` : ''}
     </div>
     ${admin && c.grass && c.active && c.grassPlan === 'biweekly' ? biCard(c) : ''}
@@ -1140,18 +1141,20 @@ function viewMoney() {
 
 /* ----- Quotes ----- */
 // New-quote form, or editing an existing quote (q). Custom items take any description and price.
-function quoteForm(q) {
-  const v = (k, d = '') => esc(q ? (q[k] ?? d) : d);
+// q = a saved quote being edited; draft = a new quote filled in from a customer.
+function quoteForm(q, draft) {
+  const src = q || draft;
+  const v = (k, d = '') => esc(src ? (src[k] ?? d) : d);
   const n = (x) => (x ? String(x) : '');
   const opt = (val, label, cur) => `<option value="${val}" ${cur === val ? 'selected' : ''}>${label}</option>`;
-  return `<div class="card"><div class="b" style="font-size:17px">${q ? 'Edit quote' : 'New quote'}</div>
+  return `<div class="card"><div class="b" style="font-size:17px">${q ? 'Edit quote' : draft ? `New quote for ${esc(draft.name)}` : 'New quote'}</div>${!q && draft ? `<div class="muted small">Filled in from their customer page. Change anything; when they accept, it’s linked to ${esc(first(draft.name))}’s account. <button class="link" data-a="quoteDraftClear">Start blank instead</button></div>` : ''}
       <label class="f"><span class="lbl">Name</span><input class="inp" id="q_name" value="${v('name')}"></label>
-      ${addrFields('q', q)}
+      ${addrFields('q', src)}
       <label class="f"><span class="lbl">Phone</span><input class="inp" id="q_phone" inputmode="tel" value="${v('phone')}"></label>
-      <div class="grid2"><label class="f"><span class="lbl">Mowing per cut ($)</span><input class="inp" id="q_grass" inputmode="decimal" placeholder="Leave blank if none" value="${esc(n(q?.grassPrice))}"></label>
-        <label class="f"><span class="lbl">How often</span><select class="inp" id="q_freq">${['Weekly', 'Every 2 weeks', 'On call', 'One time'].map((f) => opt(f, f, q?.freq || 'Weekly')).join('')}</select></label></div>
-      <div class="grid2"><label class="f"><span class="lbl">Snow ($)</span><input class="inp" id="q_snow" inputmode="decimal" placeholder="Leave blank if none" value="${esc(n(q?.snowPrice))}"></label>
-        <label class="f"><span class="lbl">Snow plan</span><select class="inp" id="q_snowPlan">${opt('perSnow', 'Per visit', q?.snowPlan || 'perSnow')}${opt('seasonal', 'Season', q?.snowPlan)}</select></label></div>
+      <div class="grid2"><label class="f"><span class="lbl">Mowing per cut ($)</span><input class="inp" id="q_grass" inputmode="decimal" placeholder="Leave blank if none" value="${esc(n(src?.grassPrice))}"></label>
+        <label class="f"><span class="lbl">How often</span><select class="inp" id="q_freq">${['Weekly', 'Every 2 weeks', 'On call', 'One time'].map((f) => opt(f, f, src?.freq || 'Weekly')).join('')}</select></label></div>
+      <div class="grid2"><label class="f"><span class="lbl">Snow ($)</span><input class="inp" id="q_snow" inputmode="decimal" placeholder="Leave blank if none" value="${esc(n(src?.snowPrice))}"></label>
+        <label class="f"><span class="lbl">Snow plan</span><select class="inp" id="q_snowPlan">${opt('perSnow', 'Per visit', src?.snowPlan || 'perSnow')}${opt('seasonal', 'Season', src?.snowPlan)}</select></label></div>
       <div class="lbl">Add-ons</div>
       ${state.addons.length ? `<div class="flex wrap">${[...state.addons].sort(byName).map((a) => `<button class="chip ${state.quoteSel.includes(a.id) ? 'on' : ''}" data-a="quoteAddon" data-id="${a.id}">${esc(a.name)} · ${money(a.price)}</button>`).join('')}</div>` : '<div class="muted">No add-ons yet. Create them in Settings.</div>'}
       <div class="lbl">Custom items</div>
@@ -1183,7 +1186,7 @@ function quoteData() {
   return { name: val('q_name').trim(), ...addrData('q'), phone: val('q_phone'), grassPrice: num(val('q_grass')), freq: val('q_freq'),
     snowPrice: num(val('q_snow')), snowPlan: val('q_snowPlan'), addons: quoteExtras(), notes: val('q_notes') };
 }
-const resetQuoteForm = () => { state.quoteSel = []; state.quoteLines = [{ d: '', a: '' }]; state.quoteEdit = false; };
+const resetQuoteForm = () => { state.quoteSel = []; state.quoteLines = [{ d: '', a: '' }]; state.quoteEdit = false; state.quoteDraft = null; };
 function viewQuotes() {
   const q = state.quoteId && state.quotes.find((x) => x.id === state.quoteId);
   if (q && state.quoteEdit) return `<button class="link" data-a="cancelQuoteEdit">← Back to quote</button>${quoteForm(q)}`;
@@ -1206,7 +1209,7 @@ function viewQuotes() {
         ${q.token && !q.acceptedAt ? `<div class="muted small">They can accept with the link in the text or the green button in the PDF. You’ll get an email when they do.</div>` : ''}
         <button class="link danger" data-a="delQuote" data-id="${q.id}">Delete quote</button></div>`;
   }
-  return `${quoteForm()}
+  return `${quoteForm(null, state.quoteDraft)}
     <div class="sec">Recent quotes</div>
     ${state.quotes.length ? [...state.quotes].sort((a, b) => b.createdAt - a.createdAt).map((q) => `<button class="rowbtn" data-a="openQuote" data-id="${q.id}"><div class="grow"><div class="b">${esc(q.name)}</div><div class="muted">${shortDate(q.date)}</div></div>${q.acceptedAt && !q.acceptedSeen ? pill('p-green', 'New: accepted') : pill(q.status === 'Sent' ? 'p-green' : q.status === 'Accepted' ? 'p-blue' : 'p-orange', q.status)}</button>`).join('') : '<div class="card empty">No quotes yet.</div>'}`;
 }
@@ -1235,10 +1238,14 @@ function viewSettings() {
   });
   const msg = (k, title, hint) => fold('msg_' + k, title, hint, field(k, 'Text', '', true), true);
   return [
-    fold('addons', 'Add-ons', `${addons.length} saved`, `<div class="muted">Extras you can add when you mark a job done, or on a quote. You can change the price each time.</div>
-      ${addons.length ? `<div class="card list" style="border:0;padding:0">${addons.map((a) => `<div class="line"><span class="b">${esc(a.name)}</span><span class="flex"><span>${money(a.price)}</span><button class="link danger" style="min-height:32px" data-a="delAddon" data-id="${a.id}">Remove</button></span></div>`).join('')}</div>` : '<div class="b">No add-ons yet.</div>'}
-      <div style="display:grid;grid-template-columns:2fr 1fr;gap:8px"><label><span class="sr">Add-on name</span><input class="inp" id="a_name" placeholder="e.g. Edge sidewalk"></label>
-        <label><span class="sr">Default price</span><input class="inp" id="a_price" inputmode="decimal" placeholder="$"></label></div>
+    fold('addons', 'Add-ons', `${addonsOf('grass').length} grass · ${addonsOf('snow').length} snow`, `<div class="muted">Extras for a job or a quote. Grass add-ons show on mows (and can be built into a customer’s cut); snow add-ons show on snow visits.</div>
+      ${['grass', 'snow'].map((k) => `<div class="lbl">${k === 'grass' ? 'Grass add-ons' : 'Snow & ice add-ons'}</div>
+        ${addonsOf(k).length ? `<div class="card list" style="border:0;padding:0">${addonsOf(k).map((a) => `<div class="line"><span class="b">${esc(a.name)}</span><span class="flex"><span>${money(a.price)}</span>
+          <button class="link" style="min-height:32px;margin-left:8px" data-a="addonKind" data-id="${a.id}" data-k="${k === 'grass' ? 'snow' : 'grass'}">Move to ${k === 'grass' ? 'snow' : 'grass'}</button>
+          <button class="link danger" style="min-height:32px;margin-left:8px" data-a="delAddon" data-id="${a.id}">Remove</button></span></div>`).join('')}</div>` : '<div class="muted small">None yet.</div>'}`).join('')}
+      <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:8px"><label><span class="sr">Add-on name</span><input class="inp" id="a_name" placeholder="e.g. Edge sidewalk"></label>
+        <label><span class="sr">Default price</span><input class="inp" id="a_price" inputmode="decimal" placeholder="$"></label>
+        <label><span class="sr">Type</span><select class="inp" id="a_kind"><option value="grass">Grass</option><option value="snow">Snow</option></select></label></div>
       <button class="btn btn-ghost" data-a="addAddon">+ Create add-on</button>`),
     fold('payments', 'Payments', `Zelle${s.zelleQr ? ' + QR' : ''}${s.venmo ? ', Venmo' : ''}`, `${field('zelle', 'Zelle (phone or email)')}
       <div><div class="lbl">Zelle QR code</div>${s.zelleQr ? `<div class="qr"><img src="${esc(s.zelleQr)}" alt="Zelle QR code"></div><button class="link danger" data-a="removeZelleQr">Remove QR</button>` : '<div class="muted small">Save your QR from your bank app’s Zelle screen, then upload it here.</div>'}
@@ -1457,7 +1464,7 @@ function renderSheet() {
         return sh.job ? `<div class="grid2"><label class="f"><span class="lbl">Date done</span><input class="inp" id="sh_date" type="date" value="${esc(sh.date)}"></label>${paidSel}</div>` : paidSel; })()}
       ${creditOf(sh.cid) > 0.004 ? `<div class="okbar">${esc(first(c.name))} has ${money(creditOf(sh.cid))} credit. If it covers this, it’s paid from credit automatically (leave “Not yet”).</div>` : ''}
       <div class="lbl">Add-ons</div>
-      ${state.addons.length ? `<div class="flex wrap">${[...state.addons].sort(byName).map((a) => `<button class="chip ${sh.sel.includes(a.id) ? 'on' : ''}" data-a="sheetAddon" data-id="${a.id}">${esc(a.name)} · ${money(a.price)}</button>`).join('')}</div>` : '<div class="muted small">No add-ons yet. Create them in Settings.</div>'}
+      ${state.addons.length ? `<div class="flex wrap">${(sh.type === 'grass' ? addonsOf('grass') : sh.type === 'snow' || sh.type === 'season' ? addonsOf('snow') : [...state.addons].sort(byName)).map((a) => `<button class="chip ${sh.sel.includes(a.id) ? 'on' : ''}" data-a="sheetAddon" data-id="${a.id}">${esc(a.name)} · ${money(a.price)}</button>`).join('')}</div>` : '<div class="muted small">No add-ons yet. Create them in Settings.</div>'}
       <div class="between b" style="font-size:18px;border-top:1px solid #ECEDEC;padding-top:10px"><span>Total</span><span id="sh_total">${money(total)}</span></div>
       ${sh.job ? `<button class="btn btn-primary" data-a="confirmDone">Save job</button><button class="btn btn-ghost" data-a="confirmDone" data-send="1">Save &amp; send invoice</button>` : `<button class="btn btn-primary" data-a="confirmDone" data-send="1">Done &amp; send</button>
       <button class="btn btn-ghost" data-a="confirmDone">Done, don’t send now</button>`}
@@ -1592,7 +1599,10 @@ function addSnowStop(cid, date) {
 }
 // ----- Snow day: one card per customer per day with inches, visits and salt counts -----
 const dayStopId = (date, cid) => `snow_${date}_${cid}`;
-const snowAddons = () => [...state.addons].filter((a) => /salt|ice|snow/i.test(a.name)).sort(byName);
+// Add-ons are Grass or Snow. Older ones without a type count as Snow if the name says salt, ice or snow.
+const addonKind = (a) => a?.kind || (/salt|ice|snow/i.test(a?.name || '') ? 'snow' : 'grass');
+const addonsOf = (kind) => [...state.addons].filter((a) => addonKind(a) === kind).sort(byName);
+const snowAddons = () => addonsOf('snow');
 const dayInchesOf = (date) => { const s = state.stops.find((x) => x.type === 'snow' && x.date === date && x.inches != null && x.inches !== ''); return s ? wholeInches(s.inches) : ''; };
 // Each visit that day with its inches, e.g. [3, 9]. (Older stops only had a visit count.)
 const passesOf = (stop) => Array.isArray(stop?.passes) ? stop.passes.map(wholeInches) : Array(num(stop?.visits)).fill(wholeInches(stop?.inches));
@@ -1614,7 +1624,7 @@ function snowCharge(c, stop) {
 const wholeInches = (v) => Math.max(0, Math.round(num(v)));
 const snowExtra = (inches) => { const s = settings(); return Math.max(0, wholeInches(inches) - wholeInches(s.snowIncluded)) * num(s.snowPerInch); };
 // Add-ons built into a customer's mow (edging, blowing…): counted on every cut, billed inside the lawn care line.
-const builtIns = (c) => (Array.isArray(c?.addons) ? c.addons : []).map((id) => state.addons.find((a) => a.id === id)).filter(Boolean);
+const builtIns = (c) => (Array.isArray(c?.addons) ? c.addons : []).map((id) => state.addons.find((a) => a.id === id)).filter((a) => a && addonKind(a) === 'grass');
 const builtInTotal = (c) => builtIns(c).reduce((a, x) => a + num(x.price), 0);
 const sheetTotal = (sh) => num(sh.price) + (sh.inchOn ? snowExtra(sh.inches) : 0) + sh.sel.reduce((a, id) => a + num((state.addons.find((x) => x.id === id) || {}).price), 0);
 const snowDesc = (stop) => 'Snow removal' + ((stop?.visit || 1) > 1 ? ` - visit ${stop.visit}` : '');
@@ -2025,7 +2035,7 @@ const A = {
   },
   createQuote() {
     const d = quoteData(); if (!d.name) return toast('Name is needed');
-    const id = store.add('quotes', { ...d, date: today(), number: String(Date.now()).slice(-5), status: 'Draft', createdAt: Date.now() });
+    const id = store.add('quotes', { ...d, ...(state.quoteDraft?.customerId ? { customerId: state.quoteDraft.customerId } : {}), date: today(), number: String(Date.now()).slice(-5), status: 'Draft', createdAt: Date.now() });
     resetQuoteForm(); state.quoteId = id; render(); scrollTo(0, 0);
   },
   editQuote(el) {
@@ -2068,7 +2078,8 @@ const A = {
   delQuote(el) { if (!confirm('Delete this quote?')) return; store.remove('quotes', el.dataset.id); state.quoteId = null; render(); },
 
   // Settings
-  addAddon() { const name = val('a_name').trim(); if (!name) return toast('Give the add-on a name'); store.add('addons', { name, price: num(val('a_price')) }); toast('Add-on created'); },
+  addAddon() { const name = val('a_name').trim(); if (!name) return toast('Give the add-on a name'); store.add('addons', { name, price: num(val('a_price')), kind: val('a_kind') || 'grass' }); toast('Add-on created'); },
+  addonKind(el) { store.update('addons', el.dataset.id, { kind: el.dataset.k }); },
   delAddon(el) { store.remove('addons', el.dataset.id); },
   removeZelleQr() { store.update('settings', 'main', { zelleQr: '' }); },
   addCrew() {
@@ -2142,9 +2153,20 @@ const A = {
   },
   custAddonNew(el) {
     const name = val('ca_name').trim(), price = num(val('ca_price')); if (!name) return toast('Name the add-on');
-    const c = cust(el.dataset.cid), id = store.add('addons', { name, price });
+    const c = cust(el.dataset.cid), id = store.add('addons', { name, price, kind: 'grass' });
     store.update('customers', c.id, { addons: (Array.isArray(c.addons) ? c.addons : []).concat(id) }); toast(`${name} added (also saved in Settings)`);
   },
+  quoteForCust(el) {
+    const c = cust(el.dataset.cid); if (!c) return;
+    const p = priceOf(c.id), a = splitAddr(c);
+    resetQuoteForm();
+    state.quoteDraft = { customerId: c.id, name: bothNames(c) || c.name, ...a, phone: c.phone || '', grassPrice: c.grass ? num(p.grass) : 0,
+      freq: { weekly: 'Weekly', biweekly: 'Every 2 weeks', oncall: 'On call' }[c.grassPlan] || 'Weekly',
+      snowPrice: c.snow ? num(c.snowPlan === 'seasonal' ? p.season : p.snow) : 0, snowPlan: c.snowPlan || 'perSnow', notes: '' };
+    state.quoteSel = builtIns(c).map((x) => x.id);
+    state.tab = 'quotes'; state.quoteId = null; render(); scrollTo(0, 0);
+  },
+  quoteDraftClear() { resetQuoteForm(); render(); },
   custSeg(el) { state.custSeg = el.dataset.v; render(); },
   openPayment(el) { state.sheet = { kind: 'payment', cid: el.dataset.cid }; renderSheet(); },
   async savePayment() {
