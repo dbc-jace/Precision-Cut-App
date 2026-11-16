@@ -141,3 +141,6 @@ details.fold.nested > .fold-body { padding: 0 12px 12px; }
 /* Paused customers sit at the bottom of the list, grayed out. */
 .rowbtn.paused { opacity: .5; }
 .rowbtn.paused .avatar { filter: grayscale(1); }
+
+/* Address: city, state, ZIP on one row. */
+.addr3 { display: grid; grid-template-columns: 1fr 64px 92px; gap: 8px; }

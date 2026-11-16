@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.15.3';
+import { createStore, newId } from './store.js?v=2026.11.15.4';
 
-const APP_VERSION = '2026.11.15.3'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.15.4'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -37,6 +37,28 @@ const textTo = (c) => (c?.phone ? (c.textAll ? allPhones(c.phone).join(', ') : f
 
 /* ---------- dates (weeks start Monday) ---------- */
 const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+// Addresses: street in "address", plus city, state and ZIP. Older records have it all in one line; split it when editing.
+const cityLine = (o) => [o?.city, [o?.state, o?.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+const fullAddr = (o) => [o?.address, cityLine(o)].filter(Boolean).join(', ');
+const addrLines = (o) => [o?.address, cityLine(o)].filter(Boolean);
+function splitAddr(o) {
+  if (!o || o.city || o.state || o.zip) return { address: o?.address || '', city: o?.city || '', state: o?.state || '', zip: o?.zip || '' };
+  const m = String(o.address || '').match(/^(.+?),\s*([^,]+?),?\s+([A-Za-z]{2})\.?\s*(\d{5}(?:-\d{4})?)?\s*$/);
+  return m ? { address: m[1].trim(), city: m[2].trim(), state: m[3].toUpperCase(), zip: m[4] || '' } : { address: o.address || '', city: '', state: '', zip: '' };
+}
+// New addresses start with the city, state and ZIP most customers have.
+function usualPlace() {
+  const n = {}; state.customers.forEach((c) => { const a = splitAddr(c); if (a.city) { const k = JSON.stringify([a.city, a.state, a.zip]); n[k] = (n[k] || 0) + 1; } });
+  const top = Object.entries(n).sort((a, b) => b[1] - a[1])[0];
+  const [city, st, zip] = top ? JSON.parse(top[0]) : ['', 'IL', ''];
+  return { city, state: st || 'IL', zip };
+}
+const addrFields = (pre, o) => { const a = o && (o.address || o.city) ? splitAddr(o) : { address: '', ...usualPlace() };
+  return `<label class="f"><span class="lbl">Street number and name</span><input class="inp" id="${pre}_address" value="${esc(a.address)}" placeholder="123 Oak St" autocomplete="street-address"></label>
+    <div class="addr3"><label class="f"><span class="lbl">City</span><input class="inp" id="${pre}_city" value="${esc(a.city)}" autocomplete="address-level2"></label>
+      <label class="f"><span class="lbl">State</span><input class="inp" id="${pre}_state" value="${esc(a.state)}" maxlength="2" autocapitalize="characters" autocomplete="address-level1"></label>
+      <label class="f"><span class="lbl">ZIP</span><input class="inp" id="${pre}_zip" value="${esc(a.zip)}" inputmode="numeric" maxlength="10" autocomplete="postal-code"></label></div>`; };
+const addrData = (pre) => ({ address: val(pre + '_address').trim(), city: val(pre + '_city').trim(), state: val(pre + '_state').trim().toUpperCase(), zip: val(pre + '_zip').trim() });
 const parseYmd = (s) => { const [y, m, d] = String(s).split('-').map(Number); return new Date(y, m - 1, d); };
 const today = () => ymd(new Date());
 function weekStart(date) { const d = new Date(date.getFullYear(), date.getMonth(), date.getDate()); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return ymd(d); }
@@ -364,7 +386,7 @@ async function statementFile(cid, p = currentPeriod(cid)) {
   const meta = [['Statement date', longDate(today())], ['Covers', `${shortDate(st.start)}, ${st.start.slice(0, 4)} to ${p.current ? 'today' : shortDate(st.end) + ', ' + st.end.slice(0, 4)}`], paid ? ['Status', 'PAID'] : ['Due', 'Upon receipt']];
   const carry = st.rows.find((r) => r.carry);
   if (carry) meta.splice(2, 0, ['Previous balance', (carry.amt < 0 ? '-' : '') + money2(Math.abs(carry.amt))]);
-  const blob = await buildPdf('invoice', { title: 'STATEMENT', meta, name: bothNames(c) || c.name, to: [c.address, c.phone], lines, totalLabel: paid ? 'Balance' : 'Balance due', total: Math.max(0, bal), paid,
+  const blob = await buildPdf('invoice', { title: 'STATEMENT', meta, name: bothNames(c) || c.name, to: [...addrLines(c), c.phone], lines, totalLabel: paid ? 'Balance' : 'Balance due', total: Math.max(0, bal), paid,
     terms: paid ? 'All paid up. Thank you!' : `Due upon receipt. Pay by Zelle to ${s.zelle}${s.venmo ? ' or by Venmo' : ''}.` });
   return new File([blob], `Precision Cut Lawns - ${String(c.name || 'Statement').replace(/[\\/:*?"<>|]/g, '')} ${p.whole ? p.start.slice(0, 4) : `${p.start.slice(0, 4)} from ${shortDate(p.start)}`}.pdf`, { type: 'application/pdf' });
 }
@@ -381,7 +403,7 @@ async function quoteFile(q) {
   const lines = quoteLinesOf(q);
   const total = lines.reduce((a, l) => a + l.amount, 0);
   const until = parseYmd(q.date); until.setDate(until.getDate() + 30);
-  const blob = await buildPdf('quote', { meta: [['Quote #', `Q-${q.number}`], ['Date', longDate(q.date)], ['Valid until', longDate(ymd(until))]], name: q.name, to: [q.address, q.phone],
+  const blob = await buildPdf('quote', { meta: [['Quote #', `Q-${q.number}`], ['Date', longDate(q.date)], ['Valid until', longDate(ymd(until))]], name: q.name, to: [...addrLines(q), q.phone],
     lines, totalLabel: q.grassPrice && q.snowPrice ? '' : 'Estimated total', total, notes: q.notes, acceptUrl: q.token ? quoteLink(q) : '',
     terms: `Prices are good for 30 days. Prepared by Jace, ${settings().businessName}.` });
   return new File([blob], `Precision Cut Quote ${q.name || q.number}.pdf`, { type: 'application/pdf' });
@@ -677,7 +699,7 @@ function stopCard(r, kind) {
   const plan = kind === 'snow' ? (c.snowPlan === 'seasonal' ? 'Seasonal' : 'Per snow') + ((stop?.visit || 1) > 1 ? ` · Visit ${stop.visit}` : '') : (r.asked && !stop?.manual ? 'Asked for a mow' : stop?.manual ? 'Added' : { weekly: 'Weekly', biweekly: 'Every 2 wks', oncall: 'On call' }[c.grassPlan] || '');
   return `<div class="card ${r.status === 'done' ? 'done' : ''}" style="gap:8px">
     <div class="between"><button class="plain grow" data-a="openCust" data-id="${c.id}"><div class="b" style="font-size:16px">${esc(c.name)}</div></button>${pill(r.status === 'skipped' ? 'p-gray' : 'p-blue', plan)}</div>
-    ${c.address ? `<a href="https://maps.apple.com/?q=${encodeURIComponent(c.address)}" class="muted">${esc(c.address)}</a>` : ''}
+    ${c.address ? `<a href="https://maps.apple.com/?q=${encodeURIComponent(fullAddr(c))}" class="muted">${esc(c.address)}</a>` : ''}
     ${(c.deck || note) ? `<div class="muted small">${c.deck ? 'Deck ' + esc(c.deck) : ''}${c.deck && note ? ' · ' : ''}${esc(note)}</div>` : ''}
     ${action}</div>`;
 }
@@ -696,7 +718,7 @@ function snowCard(r) {
   }
   return `<div class="card ${passesOf(stop).length ? 'done' : ''}" style="gap:8px">
     <div class="between"><button class="plain grow" data-a="openCust" data-id="${c.id}"><div class="b" style="font-size:16px">${esc(c.name)}</div></button>${pill('p-blue', c.snowPlan === 'seasonal' ? 'Seasonal' : 'Per snow ' + money(priceOf(c.id).snow))}</div>
-    ${c.address ? `<a href="https://maps.apple.com/?q=${encodeURIComponent(c.address)}" class="muted">${esc(c.address)}</a>` : ''}
+    ${c.address ? `<a href="https://maps.apple.com/?q=${encodeURIComponent(fullAddr(c))}" class="muted">${esc(c.address)}</a>` : ''}
     ${note ? `<div class="muted small">${esc(note)}</div>` : ''}
     <div class="lbl">Visits</div>
     ${passesOf(stop).map((inches, i) => `<div class="between" style="gap:8px"><span>Visit ${i + 1}</span>
@@ -797,7 +819,7 @@ function viewCustomers() {
   if (state.custId && cust(state.custId)) return viewCustomer();
   const q = state.q.trim().toLowerCase();
   // A to Z, active first; paused ones go to the bottom, grayed out.
-  const list = [...state.customers].sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0) || byName(a, b)).filter((c) => !q || `${c.name} ${c.name2 || ''} ${c.address} ${c.phone}`.toLowerCase().includes(q));
+  const list = [...state.customers].sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0) || byName(a, b)).filter((c) => !q || `${c.name} ${c.name2 || ''} ${fullAddr(c)} ${c.phone}`.toLowerCase().includes(q));
   const svc = (c) => [c.grass && 'Grass', c.snow && 'Snow'].filter(Boolean).join(' + ') || 'No services';
   const firstPaused = list.findIndex((c) => !c.active);
   return `<div class="flex"><label class="grow"><span class="sr">Search customers</span><input class="inp" id="search" placeholder="Search name, address or phone" value="${esc(state.q)}" data-input="search"></label>
@@ -829,7 +851,7 @@ function viewCustomer() {
       <div><div class="lbl">Phone</div><div>${c.phone ? `<a href="tel:+1${firstPhone(c.phone)}">${esc(c.phone)}</a> · <a href="${smsHref(textTo(c), '')}">Text${c.textAll && allPhones(c.phone).length > 1 ? ' all' : ''}</a>` : '—'}</div>${c.textAll && allPhones(c.phone).length > 1 ? '<div class="muted small">Texts go to all numbers as a group text.</div>' : ''}</div>
       ${admin && c.phone ? `<button class="btn btn-ghost" data-a="pickMsg" data-cid="${c.id}">Send a saved message</button>` : ''}
       ${admin && userForCustomer(c.id) ? `<button class="btn btn-ghost" data-a="openReply" data-cid="${c.id}">Message in the app</button>` : ''}
-      <div><div class="lbl">Address</div><div>${c.address ? `<a href="https://maps.apple.com/?q=${encodeURIComponent(c.address)}">${esc(c.address)}</a>` : '—'}</div></div>
+      <div><div class="lbl">Address</div><div>${c.address ? `<a href="https://maps.apple.com/?q=${encodeURIComponent(fullAddr(c))}">${esc(fullAddr(c))}</a>` : '—'}</div></div>
       ${admin && c.email ? `<div><div class="lbl">Email</div><div>${esc(c.email)}</div></div>` : ''}
       <div class="grid2"><div><div class="lbl">Deck height</div><div>${esc(c.deck || '—')}</div></div><div><div class="lbl">Status</div><div>${c.active ? 'Active' : 'Paused'}</div></div></div>
       <div><div class="lbl">Notes</div><div style="white-space:pre-line">${esc(noteOf(c.id) || 'No notes yet.')}</div></div></div>
@@ -873,7 +895,7 @@ function viewCustomerEdit() {
       <label class="f"><span class="lbl">Second person (optional)</span><input class="inp" id="c_name2" value="${esc(c.name2 || '')}" autocomplete="off" placeholder="Spouse, son, daughter…"></label>
       <label class="f"><span class="lbl">Phone number(s)</span><input class="inp" id="c_phone" value="${esc(c.phone)}" inputmode="tel" placeholder="Separate numbers with a comma"></label>
       <label class="check"><input type="checkbox" id="c_textAll" ${c.textAll ? 'checked' : ''}> Text all numbers (group text). Off: only the first number gets texts.</label>
-      <label class="f"><span class="lbl">Address</span><input class="inp" id="c_address" value="${esc(c.address)}"></label>
+      ${addrFields('c', cust(state.custId))}
       <label class="f"><span class="lbl">Email (for their app login)</span><input class="inp" id="c_email" type="email" value="${esc(c.email)}" autocapitalize="off"></label>
       <label class="f"><span class="lbl">Deck height</span><input class="inp" id="c_deck" value="${esc(c.deck)}" placeholder='e.g. 3.5"'></label>
       <label class="f"><span class="lbl">Notes (crew can see, customer can't)</span><textarea class="inp" id="c_notes" placeholder="Gate code, dogs, problem spots…">${esc(noteOf(c.id))}</textarea></label>
@@ -958,7 +980,7 @@ function quoteForm(q) {
   const opt = (val, label, cur) => `<option value="${val}" ${cur === val ? 'selected' : ''}>${label}</option>`;
   return `<div class="card"><div class="b" style="font-size:17px">${q ? 'Edit quote' : 'New quote'}</div>
       <label class="f"><span class="lbl">Name</span><input class="inp" id="q_name" value="${v('name')}"></label>
-      <label class="f"><span class="lbl">Address</span><input class="inp" id="q_address" value="${v('address')}"></label>
+      ${addrFields('q', q)}
       <label class="f"><span class="lbl">Phone</span><input class="inp" id="q_phone" inputmode="tel" value="${v('phone')}"></label>
       <div class="grid2"><label class="f"><span class="lbl">Mowing per cut ($)</span><input class="inp" id="q_grass" inputmode="decimal" placeholder="Leave blank if none" value="${esc(n(q?.grassPrice))}"></label>
         <label class="f"><span class="lbl">How often</span><select class="inp" id="q_freq">${['Weekly', 'Every 2 weeks', 'On call', 'One time'].map((f) => opt(f, f, q?.freq || 'Weekly')).join('')}</select></label></div>
@@ -977,7 +999,7 @@ function quoteForm(q) {
       <button class="btn btn-primary" data-a="${q ? 'saveQuote' : 'createQuote'}" ${q ? `data-id="${q.id}"` : ''}>${q ? 'Save changes' : 'Create quote'}</button></div>`;
 }
 // Keep what's typed in the quote form when the screen redraws.
-const QUOTE_FIELDS = ['q_name', 'q_address', 'q_phone', 'q_grass', 'q_freq', 'q_snow', 'q_snowPlan', 'q_notes'];
+const QUOTE_FIELDS = ['q_name', 'q_address', 'q_city', 'q_state', 'q_zip', 'q_phone', 'q_grass', 'q_freq', 'q_snow', 'q_snowPlan', 'q_notes'];
 function grabQuoteLines() { state.quoteLines = state.quoteLines.map((_, i) => ({ d: val('q_ld' + i), a: val('q_la' + i) })); }
 function redrawQuoteForm(change) {
   const keep = QUOTE_FIELDS.map((id) => [id, val(id)]);
@@ -992,7 +1014,7 @@ function quoteExtras() {
   return picked.concat(custom);
 }
 function quoteData() {
-  return { name: val('q_name').trim(), address: val('q_address'), phone: val('q_phone'), grassPrice: num(val('q_grass')), freq: val('q_freq'),
+  return { name: val('q_name').trim(), ...addrData('q'), phone: val('q_phone'), grassPrice: num(val('q_grass')), freq: val('q_freq'),
     snowPrice: num(val('q_snow')), snowPlan: val('q_snowPlan'), addons: quoteExtras(), notes: val('q_notes') };
 }
 const resetQuoteForm = () => { state.quoteSel = []; state.quoteLines = [{ d: '', a: '' }]; state.quoteEdit = false; };
@@ -1003,7 +1025,7 @@ function viewQuotes() {
     const total = (q.grassPrice || 0) + (q.snowPrice || 0) + (q.addons || []).reduce((a, x) => a + x.price, 0);
     return `<button class="link" data-a="quoteBack">← All quotes</button>
       <div class="card"><div class="between"><div class="b" style="font-size:18px">${esc(q.name)}</div>${pill(q.status === 'Sent' ? 'p-green' : q.status === 'Accepted' ? 'p-blue' : 'p-orange', q.status)}</div>
-        <div class="muted">${[q.address, q.phone].filter(Boolean).map(esc).join(' · ')}</div>
+        <div class="muted">${[fullAddr(q), q.phone].filter(Boolean).map(esc).join(' · ')}</div>
         <div class="card list" style="border:0;padding:0">
           ${q.grassPrice ? `<div class="line"><span>Mowing - ${esc(q.freq.toLowerCase())} (per cut)</span><span>${money(q.grassPrice)}</span></div>` : ''}
           ${q.snowPrice ? `<div class="line"><span>Snow - ${q.snowPlan === 'seasonal' ? 'season' : 'per visit'}</span><span>${money(q.snowPrice)}</span></div>` : ''}
@@ -1158,7 +1180,7 @@ function renderCustomerHome() {
   }
   app.innerHTML = `${demoBar()}
     <header class="top"><div class="top-row">${brand()}<button class="link" data-a="signOut">Sign out</button></div>
-      <h1>Hi ${esc(first(state.account?.name || c.name))}!</h1><div class="sub">${esc(c.address || '')}</div></header>
+      <h1>Hi ${esc(first(state.account?.name || c.name))}!</h1><div class="sub">${esc(fullAddr(c))}</div></header>
     <main class="no-tabs">
       ${newMsgs ? `<a class="okbar" href="#msgs" style="text-decoration:none">You have ${newMsgs} new message${newMsgs === 1 ? '' : 's'} from Jace. Tap to read.</a>` : ''}
       ${grassCard}${snowCard}
@@ -1631,7 +1653,7 @@ const A = {
     const name = val('c_name').trim();
     if (!name) return toast('Name is needed');
     const existing = cust(state.custId);
-    const data = { name, name2: val('c_name2').trim(), phone: val('c_phone'), textAll: checked('c_textAll'), address: val('c_address'), email: val('c_email').trim().toLowerCase(), deck: val('c_deck'), active: checked('c_active'),
+    const data = { name, name2: val('c_name2').trim(), phone: val('c_phone'), textAll: checked('c_textAll'), ...addrData('c'), email: val('c_email').trim().toLowerCase(), deck: val('c_deck'), active: checked('c_active'),
       grass: checked('c_grass'), grassPlan: val('c_grassPlan'), snow: checked('c_snow'), snowPlan: val('c_snowPlan'), needsDetails: false };
     // Read every field before writing: a write can redraw the screen.
     const pricing = { grass: num(val('c_pGrass')), snow: num(val('c_pSnow')), season: num(val('c_pSeason')) };
@@ -1671,7 +1693,7 @@ const A = {
       }
       // Fill anything the kept customer is missing from the duplicate.
       const fill = {};
-      ['phone', 'address', 'email', 'deck'].forEach((f) => { if (!keep[f] && dup[f]) fill[f] = dup[f]; });
+      ['phone', 'address', 'city', 'state', 'zip', 'email', 'deck'].forEach((f) => { if (!keep[f] && dup[f]) fill[f] = dup[f]; });
       if (!keep.name2 && dup.name.trim().toLowerCase() !== keep.name.trim().toLowerCase()) fill.name2 = dup.name2 || dup.name;
       if (!keep.grass && dup.grass) Object.assign(fill, { grass: true, grassPlan: dup.grassPlan });
       if (!keep.snow && dup.snow) Object.assign(fill, { snow: true, snowPlan: dup.snowPlan });
@@ -1821,7 +1843,7 @@ const A = {
     const q = state.quotes.find((x) => x.id === el.dataset.id);
     if (q.customerId && cust(q.customerId)) { state.tab = 'customers'; state.custId = q.customerId; state.quoteId = null; render(); scrollTo(0, 0); return; }
     const plan = { Weekly: 'weekly', 'Every 2 weeks': 'biweekly' }[q.freq] || 'oncall';
-    const id = store.add('customers', { name: q.name, phone: q.phone, address: q.address, email: '', deck: '', active: true, grass: !!q.grassPrice, grassPlan: plan, snow: !!q.snowPrice, snowPlan: q.snowPlan, createdAt: Date.now() });
+    const id = store.add('customers', { name: q.name, phone: q.phone, address: q.address || '', city: q.city || '', state: q.state || '', zip: q.zip || '', email: '', deck: '', active: true, grass: !!q.grassPrice, grassPlan: plan, snow: !!q.snowPrice, snowPlan: q.snowPlan, createdAt: Date.now() });
     store.set('pricing', id, { grass: q.grassPrice || 0, snow: q.snowPlan === 'perSnow' ? q.snowPrice || 0 : 0, season: q.snowPlan === 'seasonal' ? q.snowPrice || 0 : 0 });
     store.set('notes', id, { text: q.notes || '' });
     store.update('quotes', q.id, { status: 'Accepted', customerId: id });
@@ -1877,7 +1899,7 @@ const A = {
     if (type === 'message' && !text) return toast('Type a message first');
     store.add('requests', { customerId: c.id, customerName: c.name, type, text, at: Date.now(), status: 'open' });
     if (type === 'message') { document.getElementById('m_text').value = ''; toast('Sent to Jace'); return; }
-    const body = type === 'snow' ? `Hi Jace, it's ${c.name} at ${c.address}. Could you clear my snow? (requested in the app)` : `Hi Jace, it's ${c.name} at ${c.address}. Could you mow my lawn this week? (requested in the app)`;
+    const body = type === 'snow' ? `Hi Jace, it's ${c.name} at ${fullAddr(c)}. Could you clear my snow? (requested in the app)` : `Hi Jace, it's ${c.name} at ${fullAddr(c)}. Could you mow my lawn this week? (requested in the app)`;
     openText(type === 'snow' ? 'Snow removal requested' : 'Mow requested', body, s.businessPhone);
     state.sheet.title = (type === 'snow' ? 'Snow removal requested!' : 'Mow requested!') + ' Want to text Jace too?';
     renderSheet();
@@ -2121,7 +2143,7 @@ async function quoteCall(fn, data) {
   const until = ymd(new Date(parseYmd(q.date).getTime() + 30 * 864e5));
   if (fn === 'acceptQuote' && !q.acceptedAt) {
     if (today() > until) throw new Error('This quote has expired.');
-    const cid = q.customerId || store.add('customers', { name: data.name, phone: data.phone, address: q.address || '', email: '', deck: '', active: true, grass: !!q.grassPrice,
+    const cid = q.customerId || store.add('customers', { name: data.name, phone: data.phone, address: q.address || '', city: q.city || '', state: q.state || '', zip: q.zip || '', email: '', deck: '', active: true, grass: !!q.grassPrice,
       grassPlan: { Weekly: 'weekly', 'Every 2 weeks': 'biweekly' }[q.freq] || 'oncall', snow: !!q.snowPrice, snowPlan: q.snowPlan || 'perSnow', createdAt: Date.now(), fromQuote: id, needsDetails: true });
     if (!q.customerId) store.set('pricing', cid, { grass: q.grassPrice || 0, snow: q.snowPlan === 'perSnow' ? q.snowPrice || 0 : 0, season: q.snowPlan === 'seasonal' ? q.snowPrice || 0 : 0 });
     q = { ...q, status: 'Accepted', acceptedAt: Date.now(), acceptedName: data.name, acceptedPhone: data.phone, acceptedSeen: false, customerId: cid };
@@ -2132,7 +2154,7 @@ async function quoteCall(fn, data) {
 }
 function renderQuotePage(err = '') {
   const q = pubQuote, b = q?.business || {};
-  const head = `<header class="top"><div class="top-row">${brand()}</div>${q ? `<h1>Your quote</h1><div class="sub">For ${esc(q.name)}${q.address ? ' · ' + esc(q.address) : ''}</div>` : ''}</header>`;
+  const head = `<header class="top"><div class="top-row">${brand()}</div>${q ? `<h1>Your quote</h1><div class="sub">For ${esc(q.name)}${fullAddr(q) ? ' · ' + esc(fullAddr(q)) : ''}</div>` : ''}</header>`;
   if (!q) { app.innerHTML = `${head}<main class="no-tabs">${err ? `<div class="card"><div class="warnbar">${esc(err)}</div></div>` : '<p class="center muted" style="padding:40px">Loading your quote…</p>'}</main>`; return; }
   const lines = quoteLinesOf(q), total = lines.reduce((a, l) => a + num(l.amount), 0);
   let action;

@@ -16,6 +16,7 @@ const ymd = (d) => d.toISOString().slice(0, 10);
 const today = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });
 function quoteUntil(q) { const d = new Date(q.date + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + QUOTE_DAYS); return ymd(d); }
 const digits = (p) => String(p || '').replace(/\D/g, '').replace(/^1(?=\d{10}$)/, '');
+const fullAddr = (o) => [o.address, [o.city, [o.state, o.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ')].filter(Boolean).join(', ');
 const prettyPhone = (p) => { const d = digits(p); return d.length === 10 ? `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}` : String(p || '').trim(); };
 
 async function quoteByToken(token) {
@@ -26,7 +27,7 @@ async function quoteByToken(token) {
 }
 function publicQuote(q, s) {
   const until = quoteUntil(q);
-  return { name: q.name || '', address: q.address || '', phone: q.phone || '', date: q.date, until, number: q.number || '',
+  return { name: q.name || '', address: q.address || '', city: q.city || '', state: q.state || '', zip: q.zip || '', phone: q.phone || '', date: q.date, until, number: q.number || '',
     grassPrice: q.grassPrice || 0, freq: q.freq || '', snowPrice: q.snowPrice || 0, snowPlan: q.snowPlan || '',
     addons: (q.addons || []).map((a) => ({ name: a.name, price: a.price })), notes: q.notes || '',
     acceptedAt: q.acceptedAt || null, acceptedName: q.acceptedName || '', expired: !q.acceptedAt && today() > until,
@@ -59,7 +60,7 @@ exports.acceptQuote = onCall({ cors: true }, async (req) => {
       // A new customer record from the quote. Prices come from the quote; Jace fills in the rest.
       cid = db.collection('customers').doc().id;
       const plan = { Weekly: 'weekly', 'Every 2 weeks': 'biweekly' }[q.freq] || 'oncall';
-      tx.set(db.doc('customers/' + cid), { name, phone, address: q.address || '', email: '', deck: '', active: true,
+      tx.set(db.doc('customers/' + cid), { name, phone, address: q.address || '', city: q.city || '', state: q.state || '', zip: q.zip || '', email: '', deck: '', active: true,
         grass: !!q.grassPrice, grassPlan: plan, snow: !!q.snowPrice, snowPlan: q.snowPlan || 'perSnow',
         createdAt: now, fromQuote: doc.id, needsDetails: true });
       tx.set(db.doc('pricing/' + cid), { grass: q.grassPrice || 0, snow: q.snowPlan === 'perSnow' ? q.snowPrice || 0 : 0, season: q.snowPlan === 'seasonal' ? q.snowPrice || 0 : 0 });
@@ -74,7 +75,7 @@ exports.acceptQuote = onCall({ cors: true }, async (req) => {
     logger.info('Quote accepted', doc.id, 'customer', made.cid);
     // Where Jace's alert emails go: the same address as sign-up alerts.
     const owner = String(s.alertEmail || '').trim() || (await db.doc('meta/setup').get()).data()?.owner || '';
-    if (owner) alert = { to: owner, isNew: made.isNew, lines: quoteLines(q), number: q.number, address: q.address || '', notes: q.notes || '' };
+    if (owner) alert = { to: owner, isNew: made.isNew, lines: quoteLines(q), number: q.number, address: fullAddr(q), notes: q.notes || '' };
   }
   return { ...publicQuote(q, s), alert };
 });
