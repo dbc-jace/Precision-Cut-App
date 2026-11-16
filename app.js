@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.16.13';
+import { createStore, newId } from './store.js?v=2026.11.16.14';
 
-const APP_VERSION = '2026.11.16.13'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.16.14'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -964,7 +964,11 @@ function viewCustomer() {
       <div><div class="lbl">Notes</div><div style="white-space:pre-line">${esc(noteOf(c.id) || 'No notes yet.')}</div></div></div>
     <div class="sec">Services</div>
     <div class="card">
-      <div class="between"><div><div class="b">Grass</div><div class="muted">${c.grass ? esc(grassPlan) : 'Not signed up'}</div></div>${admin && c.grass ? `<div class="b">${money(p.grass)}/cut</div>` : ''}</div>
+      <div class="between"><div><div class="b">Grass</div><div class="muted">${c.grass ? esc(grassPlan) : 'Not signed up'}</div></div>${admin && c.grass ? `<div class="b" style="text-align:right">${money(num(p.grass) + builtInTotal(c))}/cut${builtIns(c).length ? `<div class="muted small" style="font-weight:400">${money(p.grass)} + ${money(builtInTotal(c))} add-ons</div>` : ''}</div>` : ''}</div>
+      ${admin && c.grass ? `<div><div class="lbl">Add-ons on every cut</div>
+        <div class="flex wrap" style="margin-top:4px">${[...state.addons].sort(byName).map((a) => `<button class="chip ${builtIns(c).some((x) => x.id === a.id) ? 'on' : ''}" data-a="custAddon" data-cid="${c.id}" data-id="${a.id}">${esc(a.name)} · ${money(a.price)}</button>`).join('') || '<span class="muted small">No add-ons yet.</span>'}</div>
+        <div class="flex" style="gap:6px;margin-top:6px"><input class="inp grow" id="ca_name" placeholder="New add-on, e.g. Edging"><input class="inp" id="ca_price" inputmode="decimal" placeholder="$" style="width:72px"><button class="btn btn-ghost btn-sm" data-a="custAddonNew" data-cid="${c.id}">Add</button></div>
+        <div class="muted small">Ticked add-ons are on every mow and show on the bill as “${esc(grassLabel(c))} (with add-ons…)”.</div></div>` : ''}
       <div class="between" style="border-top:1px solid #ECEDEC;padding-top:10px"><div><div class="b">Snow</div><div class="muted">${c.snow ? (c.snowPlan === 'seasonal' ? 'Seasonal' : 'Per snow, on request') : 'Not signed up'}</div></div>
         ${admin && c.snow ? `<div class="b">${c.snowPlan === 'seasonal' ? money(p.season) + '/season' : money(p.snow) + '/visit'}</div>` : ''}</div>
       ${admin && c.snow && c.snowPlan === 'seasonal' ? `<button class="btn btn-ghost" data-a="billSeason" data-cid="${c.id}">Bill snow season (${money(p.season)})</button>` : ''}
@@ -1609,6 +1613,9 @@ function snowCharge(c, stop) {
 // Extra charge for deep snow on per-snow jobs: inches over the included amount × the per-inch price.
 const wholeInches = (v) => Math.max(0, Math.round(num(v)));
 const snowExtra = (inches) => { const s = settings(); return Math.max(0, wholeInches(inches) - wholeInches(s.snowIncluded)) * num(s.snowPerInch); };
+// Add-ons built into a customer's mow (edging, blowing…): counted on every cut, billed inside the lawn care line.
+const builtIns = (c) => (Array.isArray(c?.addons) ? c.addons : []).map((id) => state.addons.find((a) => a.id === id)).filter(Boolean);
+const builtInTotal = (c) => builtIns(c).reduce((a, x) => a + num(x.price), 0);
 const sheetTotal = (sh) => num(sh.price) + (sh.inchOn ? snowExtra(sh.inches) : 0) + sh.sel.reduce((a, id) => a + num((state.addons.find((x) => x.id === id) || {}).price), 0);
 const snowDesc = (stop) => 'Snow removal' + ((stop?.visit || 1) > 1 ? ` - visit ${stop.visit}` : '');
 const openText = (title, body, phone, link) => { state.sheet = { kind: 'text', title, body, phone, link }; renderSheet(); };
@@ -1705,14 +1712,14 @@ const A = {
     if (kind === 'grass') closeMowReqs(c.id);
     if (!isAdmin() || seasonal) { store.update('stops', el.dataset.id, stopData); toast(seasonal ? 'Done (seasonal, no bill)' : 'Marked done'); return; }
     const base = kind === 'snow' ? num(priceOf(c.id).snow) : num(priceOf(c.id).grass);
-    state.sheet = { kind: 'done', cid: c.id, stopId: el.dataset.id, stopData, type: kind, base, price: String(base), sel: [], desc: kind === 'snow' ? snowDesc(stopOf(el.dataset.id)) : grassLabel(c) };
+    state.sheet = { kind: 'done', cid: c.id, stopId: el.dataset.id, stopData, type: kind, base, price: String(base), sel: kind === 'grass' ? builtIns(c).map((a) => a.id) : [], desc: kind === 'snow' ? snowDesc(stopOf(el.dataset.id)) : grassLabel(c) };
     renderSheet();
   },
   billStop(el) {
     const c = cust(el.dataset.cid), kind = el.dataset.kind;
     const base = kind === 'snow' ? num(priceOf(c.id).snow) : num(priceOf(c.id).grass);
     const stop = stopOf(el.dataset.id);
-    state.sheet = { kind: 'done', cid: c.id, stopId: el.dataset.id, stopData: { status: 'done' }, type: kind, base, price: String(base), sel: [], desc: kind === 'snow' ? snowDesc(stop) : grassLabel(c), date: stop?.date || (stop?.doneAt ? ymd(new Date(stop.doneAt)) : today()) };
+    state.sheet = { kind: 'done', cid: c.id, stopId: el.dataset.id, stopData: { status: 'done' }, type: kind, base, price: String(base), sel: kind === 'grass' ? builtIns(c).map((a) => a.id) : [], desc: kind === 'snow' ? snowDesc(stop) : grassLabel(c), date: stop?.date || (stop?.doneAt ? ymd(new Date(stop.doneAt)) : today()) };
     renderSheet();
   },
   otherWork(el) {
@@ -1738,7 +1745,16 @@ const A = {
       desc += ` (${inches}")`;
       if (over) addons.push({ name: `Extra snow: ${over}" over ${wholeInches(st.snowIncluded)}" × ${money(st.snowPerInch)}`, price: over * num(st.snowPerInch) });
     }
-    const v = createVisit({ customerId: sh.cid, type: sh.type, price: val('sh_price'), addons, desc, stopId: sh.stopId, date: sh.date || (sh.type === 'snow' ? state.snowDate : today()), skipCredit: !!sh.paidVia });
+    let price = val('sh_price');
+    if (sh.type === 'grass') {
+      const bi = builtIns(cust(sh.cid)).filter((a) => sh.sel.includes(a.id));
+      if (bi.length) {
+        price = num(price) + bi.reduce((a, x) => a + num(x.price), 0);
+        desc = `${desc} (with add-ons: ${bi.map((a) => a.name).join(', ')})`;
+        for (let i = addons.length - 1; i >= 0; i--) if (bi.some((b) => b.name === addons[i].name && num(b.price) === num(addons[i].price))) addons.splice(i, 1);
+      }
+    }
+    const v = createVisit({ customerId: sh.cid, type: sh.type, price, addons, desc, stopId: sh.stopId, date: sh.date || (sh.type === 'snow' ? state.snowDate : today()), skipCredit: !!sh.paidVia });
     if (sh.stopId) store.update('stops', sh.stopId, { ...sh.stopData, visitId: v.id });
     // A job they already paid for: record the payment the same day.
     if (sh.paidVia) await store.update('visits', v.id, { paid: true, paidAt: sh.job && sh.date !== today() ? parseYmd(sh.date).getTime() + 12 * 3600e3 : Date.now(), paidVia: sh.paidVia });
@@ -2119,6 +2135,16 @@ const A = {
   yearCsv(el) { const y = el.dataset.y; download(`precision-cut-${y}.csv`, yearCsv(y), 'text/csv'); },
   alertSeen(el) { if (el.dataset.kind === 'quote') store.update('quotes', el.dataset.id, { acceptedSeen: true }); else store.update('invites', el.dataset.id, { seenAt: Date.now() }); },
   inboxQuote(el) { const q = state.quotes.find((x) => x.id === el.dataset.id); if (q && !q.acceptedSeen) store.update('quotes', q.id, { acceptedSeen: true }); state.tab = 'quotes'; state.quoteId = el.dataset.id; render(); scrollTo(0, 0); },
+  custAddon(el) {
+    const c = cust(el.dataset.cid); if (!c) return;
+    const cur = Array.isArray(c.addons) ? c.addons : [], id = el.dataset.id;
+    store.update('customers', c.id, { addons: cur.includes(id) ? cur.filter((x) => x !== id) : cur.concat(id) });
+  },
+  custAddonNew(el) {
+    const name = val('ca_name').trim(), price = num(val('ca_price')); if (!name) return toast('Name the add-on');
+    const c = cust(el.dataset.cid), id = store.add('addons', { name, price });
+    store.update('customers', c.id, { addons: (Array.isArray(c.addons) ? c.addons : []).concat(id) }); toast(`${name} added (also saved in Settings)`);
+  },
   custSeg(el) { state.custSeg = el.dataset.v; render(); },
   openPayment(el) { state.sheet = { kind: 'payment', cid: el.dataset.cid }; renderSheet(); },
   async savePayment() {
