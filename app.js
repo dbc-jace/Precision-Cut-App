@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.16.9';
+import { createStore, newId } from './store.js?v=2026.11.16.10';
 
-const APP_VERSION = '2026.11.16.9'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.16.10'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -891,13 +891,17 @@ function viewCustomers() {
   const segBtn = (k, l, n) => `<button class="${seg === k ? 'on' : ''}" data-a="custSeg" data-v="${k}">${l} (${n})</button>`;
   const svc = (c) => [c.grass && 'Grass', c.snow && 'Snow'].filter(Boolean).join(' + ') || 'No services';
   const firstPaused = list.findIndex((c) => !c.active);
+  // Price on each row: snow price on the Snow tab, mowing price otherwise (or snow if they're snow only).
+  const rowPrice = (c, sg) => { const p = priceOf(c.id), snow = c.snowPlan === 'seasonal' ? (p.season ? money(p.season) + '/season' : '') : (p.snow ? money(p.snow) + '/snow' : '');
+    const txt = sg === 'snow' || (!c.grass && c.snow) ? snow : p.grass ? money(p.grass) : '';
+    return txt ? `<div class="b">${txt}</div>` : ''; };
   return `<div class="seg">${segBtn('all', 'All', live.length)}${segBtn('grass', 'Grass', live.filter((c) => c.grass).length)}${segBtn('snow', 'Snow', live.filter((c) => c.snow).length)}</div>
     <div class="flex"><label class="grow"><span class="sr">Search customers</span><input class="inp" id="search" placeholder="Search name, address or phone" value="${esc(state.q)}" data-input="search"></label>
       ${isAdmin() ? '<button class="btn btn-primary" data-a="newCust">+ Add</button>' : ''}</div>
     ${isAdmin() && state.customers.length ? '<button class="btn btn-ghost" data-a="bulkPick">Text customers a saved message</button>' : ''}
     ${list.length ? list.map((c, i) => `${i === firstPaused ? '<div class="sec">Paused</div>' : ''}<button class="rowbtn ${c.active ? '' : 'paused'}" data-a="openCust" data-id="${c.id}"><div class="avatar">${esc(initials(c.name))}</div>
       <div class="grow"><div class="b">${esc(bothNames(c))}${isAdmin() && usersForCustomer(c.id).length ? ' <span class="pill p-green" style="font-size:11px;padding:1px 7px;vertical-align:middle">App</span>' : ''}</div><div class="muted">${esc(c.address || 'No address')}</div>${isAdmin() && c.needsDetails ? '<div class="small" style="color:#B45309">New from a quote: add details</div>' : ''}</div>
-      <div style="text-align:right">${isAdmin() && priceOf(c.id).grass ? `<div class="b">${money(priceOf(c.id).grass)}</div>` : ''}<div class="muted small">${c.active ? svc(c) : 'Paused'}</div></div></button>`).join('')
+      <div style="text-align:right">${isAdmin() ? rowPrice(c, seg) : ''}<div class="muted small">${c.active ? svc(c) : 'Paused'}</div></div></button>`).join('')
       : `<div class="card empty">${state.customers.length ? 'No matches.' : 'No customers yet. Tap “+ Add” to enter your first one.'}</div>`}`;
 }
 // Every statement this customer has, newest first. Each opens as a PDF; nothing is lost when a new one starts.
