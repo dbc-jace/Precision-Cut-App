@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.16.1';
+import { createStore, newId } from './store.js?v=2026.11.16.2';
 
-const APP_VERSION = '2026.11.16.1'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.16.2'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -825,7 +825,8 @@ function viewRoute() {
 function custSummary() {
   const active = state.customers.filter((c) => c.active).length, paused = state.customers.length - active;
   const onApp = state.customers.filter((c) => usersForCustomer(c.id).length).length;
-  return `${active} active${paused ? ` · ${paused} paused` : ''}${isAdmin() ? ` · ${onApp} use the app` : ''}`;
+  const on = state.customers.filter((c) => c.active), grass = on.filter((c) => c.grass).length, snow = on.filter((c) => c.snow).length;
+  return `${state.customers.length} total · ${grass} grass · ${snow} snow · ${active} active${paused ? ` · ${paused} paused` : ''}${isAdmin() ? ` · ${onApp} use the app` : ''}`;
 }
 function viewCustomers() {
   if (state.editing) return viewCustomerEdit();
@@ -885,7 +886,7 @@ function viewCustomer() {
       <div class="between" style="border-top:1px solid #ECEDEC;padding-top:10px"><div><div class="b">Snow</div><div class="muted">${c.snow ? (c.snowPlan === 'seasonal' ? 'Seasonal' : 'Per snow, on request') : 'Not signed up'}</div></div>
         ${admin && c.snow ? `<div class="b">${c.snowPlan === 'seasonal' ? money(p.season) + '/season' : money(p.snow) + '/visit'}</div>` : ''}</div>
       ${admin && c.snow && c.snowPlan === 'seasonal' ? `<button class="btn btn-ghost" data-a="billSeason" data-cid="${c.id}">Bill snow season (${money(p.season)})</button>` : ''}
-      ${admin ? `<button class="btn btn-ghost" data-a="otherWork" data-cid="${c.id}">Bill other work</button>` : ''}
+      ${admin ? `<button class="btn btn-ghost" data-a="otherWork" data-cid="${c.id}">+ Add a job (cleanup, extra work…)</button>` : ''}
     </div>
     ${admin && c.grass && c.active && c.grassPlan === 'biweekly' ? biCard(c) : ''}
     ${admin ? `<div class="sec">App access</div>
@@ -1310,12 +1311,14 @@ function renderSheet() {
       <div class="muted small">Normal rate is ${money(sh.base)}. Changing it here only affects this invoice.</div>
       ${sh.inchOn ? `<label class="f"><span class="lbl">Inches of snow</span><input class="inp" id="sh_inches" type="number" inputmode="numeric" step="1" min="0" pattern="[0-9]*" value="${esc(sh.inches || '')}" placeholder="Whole inches, e.g. 5" data-input="sheetPrice"></label>
         <div class="muted small">Includes ${wholeInches(st.snowIncluded)}". Each inch over adds ${money(st.snowPerInch)}.<span id="sh_extra">${snowExtra(sh.inches) ? ` Extra: ${money(snowExtra(sh.inches))}` : ''}</span></div>` : ''}
-      ${sh.kind === 'done' && sh.canDesc ? `<label class="f"><span class="lbl">Description</span><input class="inp" id="sh_desc" value="${esc(sh.desc)}"></label>` : ''}
+      ${sh.kind === 'done' && sh.canDesc ? `<label class="f"><span class="lbl">${sh.job ? 'What was the job?' : 'Description'}</span><input class="inp" id="sh_desc" value="${esc(sh.desc)}" placeholder="${sh.job ? 'e.g. Fall cleanup' : ''}"></label>` : ''}
+      ${sh.job ? `<div class="grid2"><label class="f"><span class="lbl">Date done</span><input class="inp" id="sh_date" type="date" value="${esc(sh.date)}"></label>
+        <label class="f"><span class="lbl">Paid already?</span><select class="inp" id="sh_paid">${[['', 'Not yet'], ['cash', 'Yes, cash'], ['zelle-venmo', 'Yes, Zelle/Venmo'], ['check', 'Yes, check'], ['square', 'Yes, card']].map(([v, l]) => `<option value="${v}" ${sh.paidVia === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label></div>` : ''}
       <div class="lbl">Add-ons</div>
       ${state.addons.length ? `<div class="flex wrap">${[...state.addons].sort(byName).map((a) => `<button class="chip ${sh.sel.includes(a.id) ? 'on' : ''}" data-a="sheetAddon" data-id="${a.id}">${esc(a.name)} · ${money(a.price)}</button>`).join('')}</div>` : '<div class="muted small">No add-ons yet. Create them in Settings.</div>'}
       <div class="between b" style="font-size:18px;border-top:1px solid #ECEDEC;padding-top:10px"><span>Total</span><span id="sh_total">${money(total)}</span></div>
-      <button class="btn btn-primary" data-a="confirmDone" data-send="1">Done &amp; send invoice</button>
-      <button class="btn btn-ghost" data-a="confirmDone">Done, send invoice later</button>
+      ${sh.job ? `<button class="btn btn-primary" data-a="confirmDone">Save job</button><button class="btn btn-ghost" data-a="confirmDone" data-send="1">Save &amp; send invoice</button>` : `<button class="btn btn-primary" data-a="confirmDone" data-send="1">Done &amp; send invoice</button>
+      <button class="btn btn-ghost" data-a="confirmDone">Done, send invoice later</button>`}
       <button class="btn btn-ghost" data-a="closeSheet">Cancel</button>`;
   } else if (sh.kind === 'remind') {
     const rows = grassRoute(state.week).filter((r) => r.status === 'scheduled' && r.c.grassPlan !== 'oncall');
@@ -1565,11 +1568,12 @@ const A = {
     renderSheet();
   },
   otherWork(el) {
-    state.sheet = { kind: 'done', cid: el.dataset.cid, stopId: null, type: 'other', base: 0, price: '', sel: [], desc: 'Yard work', canDesc: true };
+    state.sheet = { kind: 'done', cid: el.dataset.cid, stopId: null, type: 'other', base: 0, price: '', sel: [], desc: '', canDesc: true, job: true, date: today(), paidVia: '' };
     renderSheet();
   },
   sheetAddon(el) {
     state.sheet.price = val('sh_price'); if (state.sheet.canDesc) state.sheet.desc = val('sh_desc');
+    if (state.sheet.job) { state.sheet.date = val('sh_date') || today(); state.sheet.paidVia = val('sh_paid'); }
     const id = el.dataset.id; const sel = state.sheet.sel;
     state.sheet.sel = sel.includes(id) ? sel.filter((x) => x !== id) : sel.concat(id);
     renderSheet();
@@ -1577,7 +1581,8 @@ const A = {
   async confirmDone(el) {
     const sh = state.sheet;
     const addons = sh.sel.map((id) => state.addons.find((a) => a.id === id)).filter(Boolean).map((a) => ({ name: a.name, price: num(a.price) }));
-    let desc = sh.canDesc ? (val('sh_desc') || sh.desc) : sh.desc;
+    let desc = sh.canDesc ? (val('sh_desc').trim() || sh.desc || 'Yard work') : sh.desc;
+    if (sh.job) { sh.date = val('sh_date') || today(); sh.paidVia = val('sh_paid'); if (!num(val('sh_price')) && !addons.length) return toast('Type the price first'); }
     if (sh.inchOn && wholeInches(sh.inches) > 0) {
       const st = settings(), inches = wholeInches(sh.inches), over = Math.max(0, inches - wholeInches(st.snowIncluded));
       desc += ` (${inches}")`;
@@ -1585,7 +1590,10 @@ const A = {
     }
     const v = createVisit({ customerId: sh.cid, type: sh.type, price: val('sh_price'), addons, desc, stopId: sh.stopId, date: sh.date || (sh.type === 'snow' ? state.snowDate : today()) });
     if (sh.stopId) store.update('stops', sh.stopId, { ...sh.stopData, visitId: v.id });
+    // A job they already paid for: record the payment the same day.
+    if (sh.job && sh.paidVia) await store.update('visits', v.id, { paid: true, paidAt: parseYmd(sh.date).getTime() + 12 * 3600e3, paidVia: sh.paidVia });
     state.sheet = null; renderSheet();
+    if (sh.job && sh.paidVia) { toast('Job saved as paid'); if (el.dataset.send) await run(() => sendInvoice(visitOf(v.id) || { ...v, paid: true })); return; }
     if (el.dataset.send) await run(() => sendInvoice(v)); else toast('Saved. Send the invoice anytime.');
   },
   async sendInvoice(el) { const v = visitOf(el.dataset.id); if (v) await run(() => sendInvoice(v)); },
