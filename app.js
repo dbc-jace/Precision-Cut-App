@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.16.16';
+import { createStore, newId } from './store.js?v=2026.11.16.17';
 
-const APP_VERSION = '2026.11.16.16'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.16.17'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -424,13 +424,19 @@ async function statementFile(cid, p = currentPeriod(cid)) {
 function quoteLinesOf(q) {
   const lines = [];
   if (q.grassPrice) lines.push({ desc: `Lawn mowing - ${String(q.freq || '').toLowerCase()} (per cut)`, amount: q.grassPrice });
-  if (q.snowPrice) lines.push({ desc: q.snowPlan === 'seasonal' ? 'Snow removal - full season' : 'Snow removal - per visit, on request', amount: q.snowPrice });
+  if (q.snowPrice) {
+    if (q.snowPlan === 'seasonal') lines.push({ desc: 'Snow removal - full season', amount: q.snowPrice });
+    else {
+      lines.push({ desc: `Snow removal - per visit, on request (base price, includes up to ${snowIncl()}")`, amount: q.snowPrice });
+      if (num(settings().snowPerInch)) lines.push({ desc: `Additional inch over ${snowIncl()}" (per inch, per visit)`, amount: num(settings().snowPerInch), perUnit: true });
+    }
+  }
   // Custom items are part of the job; picked add-ons are optional extras, listed last and left out of the total.
   (q.addons || []).filter((a) => a.custom).forEach((a) => lines.push({ desc: a.name, amount: a.price }));
   (q.addons || []).filter((a) => !a.custom).forEach((a) => lines.push({ desc: `Optional add-on: ${a.name}`, amount: a.price, optional: true }));
   return lines;
 }
-const quoteTotal = (lines) => lines.filter((l) => !l.optional).reduce((a, l) => a + num(l.amount), 0);
+const quoteTotal = (lines) => lines.filter((l) => !l.optional && !l.perUnit).reduce((a, l) => a + num(l.amount), 0);
 const OPTIONAL_NOTE = 'Optional add-ons are not included in the estimated total. Just let me know which ones you’d like.';
 const quoteLink = (q) => appLink() + '#quote=' + q.token;
 async function quoteFile(q) {
@@ -974,7 +980,7 @@ function viewCustomer() {
         <div class="flex" style="gap:6px;margin-top:6px"><input class="inp grow" id="ca_name" placeholder="New add-on, e.g. Edging"><input class="inp" id="ca_price" inputmode="decimal" placeholder="$" style="width:72px"><button class="btn btn-ghost btn-sm" data-a="custAddonNew" data-cid="${c.id}">Add</button></div>
         <div class="muted small">Ticked add-ons are on every mow and show on the bill as “${esc(grassLabel(c))} (with add-ons…)”.</div></div>` : ''}
       <div class="between" style="border-top:1px solid #ECEDEC;padding-top:10px"><div><div class="b">Snow</div><div class="muted">${c.snow ? (c.snowPlan === 'seasonal' ? 'Seasonal' : 'Per snow, on request') : 'Not signed up'}</div></div>
-        ${admin && c.snow ? `<div class="b">${c.snowPlan === 'seasonal' ? money(p.season) + '/season' : money(p.snow) + '/visit'}</div>` : ''}</div>
+        ${admin && c.snow ? `<div class="b" style="text-align:right">${c.snowPlan === 'seasonal' ? money(p.season) + '/season' : `${money(p.snow)}/visit<div class="muted small" style="font-weight:400">${snowTerms()}</div>`}</div>` : ''}</div>
       ${admin && c.snow && c.snowPlan === 'seasonal' ? `<button class="btn btn-ghost" data-a="billSeason" data-cid="${c.id}">Bill snow season (${money(p.season)})</button>` : ''}
       ${admin ? `<button class="btn btn-ghost" data-a="quoteForCust" data-cid="${c.id}">+ New quote for ${esc(first(c.name))}</button>` : ''}
       ${admin ? `<button class="btn btn-ghost" data-a="otherWork" data-cid="${c.id}">+ Add a job (cleanup, extra work…)</button>` : ''}
@@ -1157,7 +1163,7 @@ function quoteForm(q, draft) {
       <label class="f"><span class="lbl">Phone</span><input class="inp" id="q_phone" inputmode="tel" value="${v('phone')}"></label>
       <div class="grid2"><label class="f"><span class="lbl">Mowing per cut ($)</span><input class="inp" id="q_grass" inputmode="decimal" placeholder="Leave blank if none" value="${esc(n(src?.grassPrice))}"></label>
         <label class="f"><span class="lbl">How often</span><select class="inp" id="q_freq">${['Weekly', 'Every 2 weeks', 'On call', 'One time'].map((f) => opt(f, f, src?.freq || 'Weekly')).join('')}</select></label></div>
-      <div class="grid2"><label class="f"><span class="lbl">Snow ($)</span><input class="inp" id="q_snow" inputmode="decimal" placeholder="Leave blank if none" value="${esc(n(src?.snowPrice))}"></label>
+      <div class="grid2"><label class="f"><span class="lbl">Snow base price ($, includes ${snowIncl()}")</span><input class="inp" id="q_snow" inputmode="decimal" placeholder="Leave blank if none" value="${esc(n(src?.snowPrice))}"></label>
         <label class="f"><span class="lbl">Snow plan</span><select class="inp" id="q_snowPlan">${opt('perSnow', 'Per visit', src?.snowPlan || 'perSnow')}${opt('seasonal', 'Season', src?.snowPlan)}</select></label></div>
       <div class="lbl">Add-ons</div>
       ${state.addons.length ? `<div class="flex wrap">${[...state.addons].sort(byName).map((a) => `<button class="chip ${state.quoteSel.includes(a.id) ? 'on' : ''}" data-a="quoteAddon" data-id="${a.id}">${esc(a.name)} · ${money(a.price)}</button>`).join('')}</div>` : '<div class="muted">No add-ons yet. Create them in Settings.</div>'}
@@ -1201,8 +1207,8 @@ function viewQuotes() {
         <div class="muted">${[fullAddr(q), q.phone].filter(Boolean).map(esc).join(' · ')}</div>
         <div class="card list" style="border:0;padding:0">
           ${q.grassPrice ? `<div class="line"><span>Mowing - ${esc(q.freq.toLowerCase())} (per cut)</span><span>${money(q.grassPrice)}</span></div>` : ''}
-          ${q.snowPrice ? `<div class="line"><span>Snow - ${q.snowPlan === 'seasonal' ? 'season' : 'per visit'}</span><span>${money(q.snowPrice)}</span></div>` : ''}
-          ${qLines.filter((l) => !/^(Lawn mowing|Snow removal)/.test(l.desc)).map((l) => `<div class="line"><span${l.optional ? ' class="muted"' : ''}>${esc(l.desc)}</span><span>${money(l.amount)}</span></div>`).join('')}
+          ${q.snowPrice ? `<div class="line"><span>Snow - ${q.snowPlan === 'seasonal' ? 'season' : `per visit (includes up to ${snowIncl()}")`}</span><span>${money(q.snowPrice)}</span></div>` : ''}
+          ${qLines.filter((l) => !/^(Lawn mowing|Snow removal)/.test(l.desc)).map((l) => `<div class="line"><span${l.optional || l.perUnit ? ' class="muted"' : ''}>${esc(l.desc)}</span><span>${money(l.amount)}</span></div>`).join('')}
           ${q.grassPrice && q.snowPrice ? '' : `<div class="line b"><span>Total${qLines.some((l) => l.optional) ? ' (without optional add-ons)' : ''}</span><span>${money(total)}</span></div>`}</div>
         ${q.notes ? `<div style="white-space:pre-line">${esc(q.notes)}</div>` : ''}
         <button class="btn btn-ghost" data-a="editQuote" data-id="${q.id}">Edit quote</button>
@@ -1244,6 +1250,7 @@ function viewSettings() {
   return [
     fold('addons', 'Add-ons', `${addonsOf('grass').length} grass · ${addonsOf('snow').length} snow`, `<div class="muted">Extras for a job or a quote. Grass add-ons show on mows (and can be built into a customer’s cut); snow add-ons show on snow visits.</div>
       ${['grass', 'snow'].map((k) => `<div class="lbl">${k === 'grass' ? 'Grass add-ons' : 'Snow & ice add-ons'}</div>
+        ${k === 'snow' && num(s.snowPerInch) ? `<div class="line"><span><span class="b">Additional inch</span> <span class="muted small">over ${wholeInches(s.snowIncluded)}", added automatically from the inches you enter (change in Snow pricing)</span></span><span>${money(s.snowPerInch)}</span></div>` : ''}
         ${addonsOf(k).length ? `<div class="card list" style="border:0;padding:0">${addonsOf(k).map((a) => `<div class="line"><span class="b">${esc(a.name)}</span><span class="flex"><span>${money(a.price)}</span>
           <button class="link" style="min-height:32px;margin-left:8px" data-a="addonKind" data-id="${a.id}" data-k="${k === 'grass' ? 'snow' : 'grass'}">Move to ${k === 'grass' ? 'snow' : 'grass'}</button>
           <button class="link danger" style="min-height:32px;margin-left:8px" data-a="delAddon" data-id="${a.id}">Remove</button></span></div>`).join('')}</div>` : '<div class="muted small">None yet.</div>'}`).join('')}
@@ -1357,6 +1364,7 @@ function renderCustomerHome() {
     snowCard = c.snowPlan === 'seasonal'
       ? '<div class="card"><div class="between"><div class="b">Snow</div>' + pill('p-blue', 'Seasonal') + '</div><div class="muted">You’re covered all season. I’ll clear it after each snow.</div></div>'
       : `<div class="card"><div class="between"><div class="b">Snow</div>${pill('p-blue', 'Per snow')}</div>
+        <div class="muted small">${priceOf(c.id).snow ? money(priceOf(c.id).snow) + ' per visit, ' : 'Each visit '}${snowTerms()}.</div>
         ${!snowSeason() && !openSnow ? '<div class="muted">Snow season is October to March.</div>' : openSnow ? `<div class="okbar">Snow removal requested ${shortDate(ymd(new Date(openSnow.at)))}. I’m on it!</div>` : `<div class="muted">Need your snow cleared? Tap below and I’ll get you on the list.</div><button class="btn btn-lime" data-a="custRequest" data-type="snow">Request snow removal</button>`}</div>`;
   }
   app.innerHTML = `${demoBar()}
@@ -1617,15 +1625,17 @@ function snowCharge(c, stop) {
   const lines = []; let base = 0;
   if (perSnow && passes.length) {
     base = passes.length * num(priceOf(c.id).snow);
-    passes.forEach((inches, i) => { const over = Math.max(0, inches - inc); if (over && num(st.snowPerInch)) lines.push({ name: `Visit ${i + 1}: ${inches}" (${over}" over ${inc}" × ${money(st.snowPerInch)})`, price: over * num(st.snowPerInch) }); });
+    passes.forEach((inches, i) => { const over = Math.max(0, inches - inc); if (over && num(st.snowPerInch)) lines.push({ name: `Additional inch × ${over} (visit ${i + 1}: ${inches}", ${inc}" included)`, price: over * num(st.snowPerInch) }); });
   }
   for (const a of snowAddons()) { const n = num(stop?.addonCounts?.[a.id]); if (n > 0) lines.push({ name: `${a.name} × ${n}`, price: n * num(a.price) }); }
-  const desc = `Snow removal · ${passes.length} visit${passes.length === 1 ? '' : 's'}${passes.length ? ` (${passes.map((x) => x + '"').join(', ')})` : ''}${perSnow ? '' : ' · seasonal'}`;
+  const desc = `Snow removal · ${passes.length} visit${passes.length === 1 ? '' : 's'}${passes.length ? ` (${passes.map((x) => x + '"').join(', ')})` : ''}${perSnow ? ` · up to ${inc}" included per visit` : ' · seasonal'}`;
   const total = Math.round((base + lines.reduce((a, l) => a + l.price, 0)) * 100) / 100;
   return { base, lines, desc, total };
 }
 // Extra charge for deep snow on per-snow jobs: inches over the included amount × the per-inch price.
 const wholeInches = (v) => Math.max(0, Math.round(num(v)));
+const snowIncl = () => wholeInches(settings().snowIncluded);
+const snowTerms = () => `includes up to ${snowIncl()}"${num(settings().snowPerInch) ? `; each additional inch ${money(settings().snowPerInch)}` : ''}`;
 const snowExtra = (inches) => { const s = settings(); return Math.max(0, wholeInches(inches) - wholeInches(s.snowIncluded)) * num(s.snowPerInch); };
 // Add-ons built into a customer's mow (edging, blowing…): counted on every cut, billed inside the lawn care line.
 const builtIns = (c) => (Array.isArray(c?.addons) ? c.addons : []).map((id) => state.addons.find((a) => a.id === id)).filter((a) => a && addonKind(a) === 'grass');
@@ -1756,8 +1766,8 @@ const A = {
     if (sh.job) { sh.date = val('sh_date') || today(); if (!num(val('sh_price')) && !addons.length) return toast('Type the price first'); }
     if (sh.inchOn && wholeInches(sh.inches) > 0) {
       const st = settings(), inches = wholeInches(sh.inches), over = Math.max(0, inches - wholeInches(st.snowIncluded));
-      desc += ` (${inches}")`;
-      if (over) addons.push({ name: `Extra snow: ${over}" over ${wholeInches(st.snowIncluded)}" × ${money(st.snowPerInch)}`, price: over * num(st.snowPerInch) });
+      desc += ` (${inches}", up to ${wholeInches(st.snowIncluded)}" included)`;
+      if (over) addons.push({ name: `Additional inch × ${over} (${money(st.snowPerInch)} each)`, price: over * num(st.snowPerInch) });
     }
     let price = val('sh_price');
     if (sh.type === 'grass') {
@@ -2470,7 +2480,7 @@ function renderQuotePage(err = '') {
       <div class="muted small">No account needed. Precision Cut Lawns will contact you soon to get you on the schedule.</div>`;
   app.innerHTML = `${head}<main class="no-tabs">
     <div class="card"><div class="between"><div class="muted small">Quote Q-${esc(q.number)} · ${shortDate(q.date)}</div><div class="muted small">Good until ${shortDate(q.until)}</div></div>
-      <div class="list">${lines.map((l) => `<div class="line"><span${l.optional ? ' class="muted"' : ''}>${esc(l.desc)}</span><b>${money(l.amount)}</b></div>`).join('')}
+      <div class="list">${lines.map((l) => `<div class="line"><span${l.optional || l.perUnit ? ' class="muted"' : ''}>${esc(l.desc)}</span><b>${money(l.amount)}</b></div>`).join('')}
       ${q.grassPrice && q.snowPrice ? '' : `<div class="line b"><span>Estimated total</span><span>${money(total)}</span></div>`}</div>
       ${lines.some((l) => l.optional) ? `<div class="muted small">${OPTIONAL_NOTE}</div>` : ''}
       ${q.notes ? `<div style="white-space:pre-line">${esc(q.notes)}</div>` : ''}</div>

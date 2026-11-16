@@ -33,8 +33,10 @@ function publicQuote(q, s) {
     acceptedAt: q.acceptedAt || null, acceptedName: q.acceptedName || '', expired: !q.acceptedAt && today() > until,
     business: { name: s.businessName || 'Precision Cut Lawns', phone: s.businessPhone || '', email: s.businessEmail || '' } };
 }
-const quoteLines = (q) => [q.grassPrice && `Mowing (${String(q.freq || '').toLowerCase()}): $${q.grassPrice} per cut`,
-  q.snowPrice && `Snow (${q.snowPlan === 'seasonal' ? 'full season' : 'per visit'}): $${q.snowPrice}`,
+// st = settings: per-snow base price includes snowIncluded inches; each inch over is snowPerInch.
+const quoteLines = (q, st = {}) => [q.grassPrice && `Mowing (${String(q.freq || '').toLowerCase()}): $${q.grassPrice} per cut`,
+  q.snowPrice && (q.snowPlan === 'seasonal' ? `Snow (full season): $${q.snowPrice}`
+    : `Snow (per visit, includes up to ${Number(st.snowIncluded ?? 3)}"): $${q.snowPrice}; additional inch $${Number(st.snowPerInch ?? 10)} each`),
   ...(q.addons || []).map((a) => `${a.custom ? '' : 'Optional add-on: '}${a.name}: $${a.price}`)].filter(Boolean);
 
 exports.getQuote = onCall({ cors: true }, async (req) => {
@@ -75,7 +77,7 @@ exports.acceptQuote = onCall({ cors: true }, async (req) => {
     logger.info('Quote accepted', doc.id, 'customer', made.cid);
     // Where Jace's alert emails go: the same address as sign-up alerts.
     const owner = String(s.alertEmail || '').trim() || String(s.businessEmail || '').trim() || 'jace.precisioncutlawns@gmail.com';
-    if (owner) alert = { to: owner, isNew: made.isNew, lines: quoteLines(q), number: q.number, address: fullAddr(q), notes: q.notes || '' };
+    if (owner) alert = { to: owner, isNew: made.isNew, lines: quoteLines(q, s), number: q.number, address: fullAddr(q), notes: q.notes || '' };
   }
   return { ...publicQuote(q, s), alert };
 });
