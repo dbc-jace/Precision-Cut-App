@@ -124,6 +124,12 @@ service cloud.firestore {
         && resource.data.extra == true && resource.data.addedBy == 'customer' && resource.data.status == 'scheduled';
     }
 
+    // Payments Jace records by hand (cash up front, etc.). Customers can read their own.
+    match /payments/{id} {
+      allow read: if isAdmin() || ownsCustomer(resource.data.customerId);
+      allow write: if isAdmin();
+    }
+
     // Invoices. Admin manages them. A customer reads their own and can only tap "I've paid".
     match /visits/{id} {
       allow read: if isAdmin() || ownsCustomer(resource.data.customerId);
