@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.16.15';
+import { createStore, newId } from './store.js?v=2026.11.16.16';
 
-const APP_VERSION = '2026.11.16.15'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.16.16'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -425,16 +425,20 @@ function quoteLinesOf(q) {
   const lines = [];
   if (q.grassPrice) lines.push({ desc: `Lawn mowing - ${String(q.freq || '').toLowerCase()} (per cut)`, amount: q.grassPrice });
   if (q.snowPrice) lines.push({ desc: q.snowPlan === 'seasonal' ? 'Snow removal - full season' : 'Snow removal - per visit, on request', amount: q.snowPrice });
-  (q.addons || []).forEach((a) => lines.push({ desc: a.name, amount: a.price }));
+  // Custom items are part of the job; picked add-ons are optional extras, listed last and left out of the total.
+  (q.addons || []).filter((a) => a.custom).forEach((a) => lines.push({ desc: a.name, amount: a.price }));
+  (q.addons || []).filter((a) => !a.custom).forEach((a) => lines.push({ desc: `Optional add-on: ${a.name}`, amount: a.price, optional: true }));
   return lines;
 }
+const quoteTotal = (lines) => lines.filter((l) => !l.optional).reduce((a, l) => a + num(l.amount), 0);
+const OPTIONAL_NOTE = 'Optional add-ons are not included in the estimated total. Just let me know which ones you’d like.';
 const quoteLink = (q) => appLink() + '#quote=' + q.token;
 async function quoteFile(q) {
   const lines = quoteLinesOf(q);
-  const total = lines.reduce((a, l) => a + l.amount, 0);
+  const total = quoteTotal(lines), hasOpt = lines.some((l) => l.optional);
   const until = parseYmd(q.date); until.setDate(until.getDate() + 30);
   const blob = await buildPdf('quote', { meta: [['Quote #', `Q-${q.number}`], ['Date', longDate(q.date)], ['Valid until', longDate(ymd(until))]], name: q.name, to: [...addrLines(q), q.phone],
-    lines, totalLabel: q.grassPrice && q.snowPrice ? '' : 'Estimated total', total, notes: q.notes, acceptUrl: q.token ? quoteLink(q) : '',
+    lines, totalLabel: q.grassPrice && q.snowPrice ? '' : 'Estimated total', total, notes: [hasOpt ? OPTIONAL_NOTE : '', q.notes].filter(Boolean).join('\n\n'), acceptUrl: q.token ? quoteLink(q) : '',
     terms: `Prices are good for 30 days. Prepared by Jace, ${settings().businessName}.` });
   return new File([blob], `Precision Cut Quote ${q.name || q.number}.pdf`, { type: 'application/pdf' });
 }
@@ -1191,15 +1195,15 @@ function viewQuotes() {
   const q = state.quoteId && state.quotes.find((x) => x.id === state.quoteId);
   if (q && state.quoteEdit) return `<button class="link" data-a="cancelQuoteEdit">← Back to quote</button>${quoteForm(q)}`;
   if (q) {
-    const total = (q.grassPrice || 0) + (q.snowPrice || 0) + (q.addons || []).reduce((a, x) => a + x.price, 0);
+    const qLines = quoteLinesOf(q), total = quoteTotal(qLines);
     return `<button class="link" data-a="quoteBack">← All quotes</button>
       <div class="card"><div class="between"><div class="b" style="font-size:18px">${esc(q.name)}</div>${pill(q.status === 'Sent' ? 'p-green' : q.status === 'Accepted' ? 'p-blue' : 'p-orange', q.status)}</div>
         <div class="muted">${[fullAddr(q), q.phone].filter(Boolean).map(esc).join(' · ')}</div>
         <div class="card list" style="border:0;padding:0">
           ${q.grassPrice ? `<div class="line"><span>Mowing - ${esc(q.freq.toLowerCase())} (per cut)</span><span>${money(q.grassPrice)}</span></div>` : ''}
           ${q.snowPrice ? `<div class="line"><span>Snow - ${q.snowPlan === 'seasonal' ? 'season' : 'per visit'}</span><span>${money(q.snowPrice)}</span></div>` : ''}
-          ${(q.addons || []).map((a) => `<div class="line"><span>${esc(a.name)}</span><span>${money(a.price)}</span></div>`).join('')}
-          ${q.grassPrice && q.snowPrice ? '' : `<div class="line b"><span>Total</span><span>${money(total)}</span></div>`}</div>
+          ${qLines.filter((l) => !/^(Lawn mowing|Snow removal)/.test(l.desc)).map((l) => `<div class="line"><span${l.optional ? ' class="muted"' : ''}>${esc(l.desc)}</span><span>${money(l.amount)}</span></div>`).join('')}
+          ${q.grassPrice && q.snowPrice ? '' : `<div class="line b"><span>Total${qLines.some((l) => l.optional) ? ' (without optional add-ons)' : ''}</span><span>${money(total)}</span></div>`}</div>
         ${q.notes ? `<div style="white-space:pre-line">${esc(q.notes)}</div>` : ''}
         <button class="btn btn-ghost" data-a="editQuote" data-id="${q.id}">Edit quote</button>
         <button class="btn btn-primary" data-a="sendQuote" data-id="${q.id}">${q.status === 'Sent' ? 'Send again' : 'Send quote (PDF)'}</button>
@@ -2454,7 +2458,7 @@ function renderQuotePage(err = '') {
   const q = pubQuote, b = q?.business || {};
   const head = `<header class="top"><div class="top-row">${brand()}</div>${q ? `<h1>Your quote</h1><div class="sub">For ${esc(q.name)}${fullAddr(q) ? ' · ' + esc(fullAddr(q)) : ''}</div>` : ''}</header>`;
   if (!q) { app.innerHTML = `${head}<main class="no-tabs">${err ? `<div class="card"><div class="warnbar">${esc(err)}</div></div>` : '<p class="center muted" style="padding:40px">Loading your quote…</p>'}</main>`; return; }
-  const lines = quoteLinesOf(q), total = lines.reduce((a, l) => a + num(l.amount), 0);
+  const lines = quoteLinesOf(q), total = quoteTotal(lines);
   let action;
   if (q.acceptedAt) action = `<div class="okbar">✓ Accepted ${shortDate(ymd(new Date(q.acceptedAt)))}${q.acceptedName ? ' by ' + esc(q.acceptedName) : ''}. Thank you! Precision Cut Lawns will contact you soon.</div>`;
   else if (q.expired) action = `<div class="warnbar">This quote expired ${shortDate(q.until)}. Text ${esc(b.phone)} for an updated one.</div>`;
@@ -2466,8 +2470,9 @@ function renderQuotePage(err = '') {
       <div class="muted small">No account needed. Precision Cut Lawns will contact you soon to get you on the schedule.</div>`;
   app.innerHTML = `${head}<main class="no-tabs">
     <div class="card"><div class="between"><div class="muted small">Quote Q-${esc(q.number)} · ${shortDate(q.date)}</div><div class="muted small">Good until ${shortDate(q.until)}</div></div>
-      <div class="list">${lines.map((l) => `<div class="line"><span>${esc(l.desc)}</span><b>${money(l.amount)}</b></div>`).join('')}
+      <div class="list">${lines.map((l) => `<div class="line"><span${l.optional ? ' class="muted"' : ''}>${esc(l.desc)}</span><b>${money(l.amount)}</b></div>`).join('')}
       ${q.grassPrice && q.snowPrice ? '' : `<div class="line b"><span>Estimated total</span><span>${money(total)}</span></div>`}</div>
+      ${lines.some((l) => l.optional) ? `<div class="muted small">${OPTIONAL_NOTE}</div>` : ''}
       ${q.notes ? `<div style="white-space:pre-line">${esc(q.notes)}</div>` : ''}</div>
     <div class="card">${action}</div>
     <div class="muted small center">Questions? Call or text <a href="tel:${esc(b.phone)}">${esc(b.phone)}</a></div></main>`;

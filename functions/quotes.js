@@ -35,7 +35,7 @@ function publicQuote(q, s) {
 }
 const quoteLines = (q) => [q.grassPrice && `Mowing (${String(q.freq || '').toLowerCase()}): $${q.grassPrice} per cut`,
   q.snowPrice && `Snow (${q.snowPlan === 'seasonal' ? 'full season' : 'per visit'}): $${q.snowPrice}`,
-  ...(q.addons || []).map((a) => `${a.name}: $${a.price}`)].filter(Boolean);
+  ...(q.addons || []).map((a) => `${a.custom ? '' : 'Optional add-on: '}${a.name}: $${a.price}`)].filter(Boolean);
 
 exports.getQuote = onCall({ cors: true }, async (req) => {
   const doc = await quoteByToken(req.data?.token);
