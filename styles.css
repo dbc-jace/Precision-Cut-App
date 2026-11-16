@@ -137,3 +137,7 @@ details.fold.nested > .fold-body { padding: 0 12px 12px; }
 .kpi.in .n { color: var(--pine); }
 .kpi.profit { background: var(--forest); border-color: var(--forest); color: #fff; }
 .kpi.profit .lbl { color: #C9D6CD; }
+
+/* Paused customers sit at the bottom of the list, grayed out. */
+.rowbtn.paused { opacity: .5; }
+.rowbtn.paused .avatar { filter: grayscale(1); }

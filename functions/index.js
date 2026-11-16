@@ -231,3 +231,6 @@ exports.squareWebhook = onRequest({ secrets: [SQUARE_WEBHOOK_KEY] }, async (req,
   }
   res.status(200).send('ok');
 });
+
+// Quote links (see quotes.js).
+Object.assign(exports, require("./quotes"));

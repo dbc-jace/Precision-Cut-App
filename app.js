@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.14.12';
+import { createStore, newId } from './store.js?v=2026.11.15.1';
 
-const APP_VERSION = '2026.11.14.12'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.15.1'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -175,7 +175,7 @@ async function buildPdf(kind, data) {
   const forest = [24, 55, 35], lime = [106, 165, 31], ink = [26, 29, 26], muted = [96, 104, 98], pale = [244, 246, 242], rule = [220, 226, 218];
   const L = 48, R = 564, W = R - L;
   const font = (style, size, color = ink) => { doc.setFont('helvetica', style); doc.setFontSize(size); doc.setTextColor(...color); };
-  const title = kind === 'quote' ? 'QUOTE' : 'INVOICE';
+  const title = data.title || (kind === 'quote' ? 'QUOTE' : 'INVOICE');
   const contact = [s.businessPhone, s.businessEmail, s.website].filter(Boolean);
 
   const footer = () => {
@@ -225,7 +225,7 @@ async function buildPdf(kind, data) {
     const dl = doc.splitTextToSize(l.desc, 370); const h = 14 + dl.length * 14;
     if (y + h > 690) { footer(); doc.addPage(); topBand(); y = 40; head(); }
     if (i % 2) { doc.setFillColor(...pale); doc.rect(L, y, W, h, 'F'); }
-    font('normal', 11); doc.text(dl, L + 14, y + 18); doc.text(money2(l.amount), R - 14, y + 18, { align: 'right' });
+    font('normal', 11); doc.text(dl, L + 14, y + 18); doc.text(l.amount < 0 ? '-' + money2(-l.amount) : money2(l.amount), R - 14, y + 18, { align: 'right' });
     y += h;
   });
   doc.setDrawColor(...rule); doc.line(L, y, R, y);
@@ -264,10 +264,21 @@ async function buildPdf(kind, data) {
     font('bold', 8.5, lime); doc.text('NOTES', L, y, { charSpace: 0.8 });
     font('normal', 10.5); doc.text(nl, L, y + 16); y += 24 + nl.length * 14;
   }
-  if (y < 712) {
+  if (kind === 'quote' && data.acceptUrl) { if (y > 690) { footer(); doc.addPage(); topBand(); y = 40; } font('bold', 13, forest); doc.text('Thank you for considering Precision Cut Lawns!', 306, Math.max(y + 10, 640), { align: 'center' }); y = Math.max(y + 10, 640); }
+  else if (y < 712) {
     font('bold', 13, forest);
     doc.text(kind === 'quote' ? 'Thank you for considering Precision Cut Lawns!' : data.paid ? 'Paid in full. Thank you!' : 'Thank you for your business!', 306, Math.max(y + 10, 640), { align: 'center' });
-    if (kind === 'quote') { font('normal', 10, muted); doc.text(`To accept, reply to my text or call ${s.businessPhone}.`, 306, Math.max(y + 10, 640) + 16, { align: 'center' }); }
+    if (kind === 'quote' && !data.acceptUrl) { font('normal', 10, muted); doc.text(`To accept, reply to my text or call ${s.businessPhone}.`, 306, Math.max(y + 10, 640) + 16, { align: 'center' }); }
+  }
+  if (kind === 'quote' && data.acceptUrl) {
+    // A big green "Accept this quote" button that opens the customer's Accept page.
+    let by = Math.max(y + 34, 664);
+    if (by + 56 > 736) { footer(); doc.addPage(); topBand(); by = 80; }
+    const bw = 220, bx = 306 - bw / 2;
+    doc.setFillColor(...lime); doc.roundedRect(bx, by, bw, 34, 6, 6, 'F');
+    font('bold', 13, [255, 255, 255]); doc.text('Accept this quote', 306, by + 22, { align: 'center' });
+    doc.link(bx, by, bw, 34, { url: data.acceptUrl });
+    font('normal', 8.5, muted); doc.text(`Or reply to my text or call ${s.businessPhone}.`, 306, by + 50, { align: 'center' });
   }
   footer();
   const pages = doc.getNumberOfPages();
@@ -300,31 +311,51 @@ function ledgerFor(cid) {
   const unpaid = vs.filter((v) => !v.paid).sort((a, b) => a.date.localeCompare(b.date));
   return { rows, unpaid, owe: Math.round(unpaid.reduce((a, v) => a + num(v.total), 0) * 100) / 100 };
 }
-const ledgerHtml = (rows, pdf) => `<div class="list">${rows.map((r) => `<div class="line"><div class="grow"><div>${shortDate(r.date)} · ${esc(r.desc)}${r.fee ? ` <span class="muted small">(+${money(r.fee)} fee covered)</span>` : ''}</div>
-    <div class="muted small">Balance ${money(r.bal)}${pdf && r.id ? ` · <button class="link" style="min-height:28px" data-a="custPdf" data-id="${r.id}">PDF</button>` : ''}</div></div>
+const ledgerHtml = (rows) => `<div class="list">${rows.map((r) => `<div class="line"><div class="grow"><div>${shortDate(r.date)} · ${esc(r.desc)}${r.fee ? ` <span class="muted small">(+${money(r.fee)} fee covered)</span>` : ''}</div>
+    <div class="muted small">Balance ${money(r.bal)}</div></div>
     <b style="${r.pay ? 'color:#1D4A22' : ''}">${r.pay ? '−' : '+'}${money(Math.abs(r.amt))}</b></div>`).join('')}</div>`;
 const visitLines = (v) => [{ desc: chargeLabel(v), amount: v.price }, ...(v.addons || []).map((a) => ({ desc: a.name, amount: a.price }))];
-async function invoiceFile(v) {
-  const c = cust(v.customerId) || {};
-  const s = settings();
-  const meta = [['Invoice #', v.invoiceNo], ['Date', longDate(v.date)], v.paid ? ['Status', 'PAID'] : ['Due', 'Upon receipt']];
-  const dated = (x) => visitLines(x).map((l, i) => ({ ...l, desc: i === 0 ? `${shortDate(x.date)} · ${l.desc}` : `   + ${l.desc}` }));
-  const earlier = v.paid ? [] : state.visits.filter((x) => x.customerId === v.customerId && !x.paid && x.id !== v.id).sort((a, b) => a.date.localeCompare(b.date));
-  const lines = [...earlier.map((x) => ({ desc: `${shortDate(x.date)} · ${chargeLabel(x)} (earlier, unpaid)`, amount: x.total })), ...dated(v)];
-  const total = Math.round((num(v.total) + earlier.reduce((a, x) => a + num(x.total), 0)) * 100) / 100;
-  const blob = await buildPdf('invoice', { meta, name: v.customerName, to: [c.address, c.phone], lines, totalLabel: v.paid ? 'Total paid' : earlier.length ? 'Balance due' : 'Total due', total, paid: !!v.paid,
-    terms: v.paid ? 'Paid in full. Thank you!' : `Due upon receipt. Pay by Zelle to ${s.zelle}${s.venmo ? ' or by Venmo' : ''}.` });
-  return new File([blob], `Precision Cut Invoice ${v.invoiceNo}.pdf`, { type: 'application/pdf' });
+// One running statement per customer (not a PDF per invoice): same file name every time, so it replaces the old one.
+// It starts Jan 1 each year (or the day Jace starts a fresh statement); anything owed from before carries over as one line.
+function statementStart(c) { const jan1 = ymd(new Date()).slice(0, 4) + '-01-01'; return c?.statementFrom && c.statementFrom > jan1 ? c.statementFrom : jan1; }
+function statementRows(cid) {
+  const L = ledgerFor(cid), start = statementStart(cust(cid));
+  const before = L.rows.filter((r) => r.date < start), rows = L.rows.filter((r) => r.date >= start);
+  const opening = before.length ? before[before.length - 1].bal : 0;
+  if (Math.abs(opening) > 0.004) rows.unshift({ date: start, desc: opening > 0 ? 'Balance carried over' : 'Credit carried over', amt: opening, bal: opening, pay: opening < 0, carry: true });
+  return { ...L, start, rows };
 }
-async function quoteFile(q) {
+async function statementFile(cid) {
+  const c = cust(cid) || {}, s = settings(), st = statementRows(cid);
+  const bal = st.rows.length ? st.rows[st.rows.length - 1].bal : 0;
   const lines = [];
-  if (q.grassPrice) lines.push({ desc: `Lawn mowing - ${q.freq.toLowerCase()} (per cut)`, amount: q.grassPrice });
+  st.rows.forEach((r) => {
+    const v = r.id && visitOf(r.id);
+    if (v) visitLines(v).forEach((l, i) => lines.push({ desc: i === 0 ? `${shortDate(v.date)} · ${l.desc}` : `   + ${l.desc}`, amount: l.amount }));
+    else lines.push({ desc: `${shortDate(r.date)} · ${r.desc}${r.fee ? ` (+${money2(r.fee)} card fee covered)` : ''}`, amount: r.amt });
+  });
+  if (!lines.length) lines.push({ desc: 'No charges yet', amount: 0 });
+  const paid = bal <= 0.004;
+  const meta = [['Statement date', longDate(today())], ['Covers', `${shortDate(st.start)} to today`], paid ? ['Status', 'PAID'] : ['Due', 'Upon receipt']];
+  const blob = await buildPdf('invoice', { title: 'STATEMENT', meta, name: bothNames(c) || c.name, to: [c.address, c.phone], lines, totalLabel: paid ? 'Balance' : 'Balance due', total: Math.max(0, bal), paid,
+    terms: paid ? 'All paid up. Thank you!' : `Due upon receipt. Pay by Zelle to ${s.zelle}${s.venmo ? ' or by Venmo' : ''}.` });
+  return new File([blob], `Precision Cut Lawns - ${String(c.name || 'Statement').replace(/[\\/:*?"<>|]/g, '')}.pdf`, { type: 'application/pdf' });
+}
+// What's on a quote, as lines. Used by the PDF and by the customer's Accept page.
+function quoteLinesOf(q) {
+  const lines = [];
+  if (q.grassPrice) lines.push({ desc: `Lawn mowing - ${String(q.freq || '').toLowerCase()} (per cut)`, amount: q.grassPrice });
   if (q.snowPrice) lines.push({ desc: q.snowPlan === 'seasonal' ? 'Snow removal - full season' : 'Snow removal - per visit, on request', amount: q.snowPrice });
   (q.addons || []).forEach((a) => lines.push({ desc: a.name, amount: a.price }));
+  return lines;
+}
+const quoteLink = (q) => appLink() + '#quote=' + q.token;
+async function quoteFile(q) {
+  const lines = quoteLinesOf(q);
   const total = lines.reduce((a, l) => a + l.amount, 0);
   const until = parseYmd(q.date); until.setDate(until.getDate() + 30);
   const blob = await buildPdf('quote', { meta: [['Quote #', `Q-${q.number}`], ['Date', longDate(q.date)], ['Valid until', longDate(ymd(until))]], name: q.name, to: [q.address, q.phone],
-    lines, totalLabel: q.grassPrice && q.snowPrice ? '' : 'Estimated total', total, notes: q.notes,
+    lines, totalLabel: q.grassPrice && q.snowPrice ? '' : 'Estimated total', total, notes: q.notes, acceptUrl: q.token ? quoteLink(q) : '',
     terms: `Prices are good for 30 days. Prepared by Jace, ${settings().businessName}.` });
   return new File([blob], `Precision Cut Quote ${q.name || q.number}.pdf`, { type: 'application/pdf' });
 }
@@ -356,7 +387,7 @@ async function sendInvoice(v) {
     }
     catch (e) { console.error(e); toast('Couldn’t make the card pay link. Sending without it.'); }
   }
-  const sent = await sharePdf(await invoiceFile(v), text, textTo(c));
+  const sent = await sharePdf(await statementFile(v.customerId), text, textTo(c));
   if (sent) { await store.update('visits', v.id, { sentAt: Date.now() }); toast('Invoice ready to send'); }
 }
 function newInvoiceNo() { const d = new Date(); return `PC-${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`; }
@@ -533,6 +564,7 @@ function renderStaff() {
   if (!tabs.includes(state.tab)) state.tab = 'route';
   const openReq = state.requests.filter((r) => r.status !== 'done').length + (isAdmin() ? state.pending.length : 0);
   const saysPaid = state.visits.filter((v) => !v.paid && v.customerSaysPaid).length;
+  const newAccepts = state.quotes.filter((q) => q.acceptedAt && !q.acceptedSeen).length;
   const view = { route: viewRoute, customers: viewCustomers, money: viewMoney, quotes: viewQuotes, settings: viewSettings }[state.tab]();
   const titles = { route: ['Route', state.routeSeg === 'snow' ? 'Snow removal' : state.routeSeg === 'inbox' ? 'Requests from customers' : 'Week of ' + weekLabel(state.week)],
     customers: ['Customers', custSummary()], money: ['Money', 'Income, expenses and who owes'],
@@ -546,7 +578,7 @@ function renderStaff() {
     ${demoBar()}
     <main>${view}</main>
     <nav class="tabs"><div class="inner">${tabs.map((t) => `<button class="tab ${state.tab === t ? 'on' : ''}" data-a="tab" data-v="${t}">${svg(ICON[t])}${t[0].toUpperCase() + t.slice(1)}
-      ${t === 'route' && openReq ? `<span class="badge">${openReq}</span>` : ''}${t === 'money' && saysPaid ? `<span class="badge">${saysPaid}</span>` : ''}</button>`).join('')}</div></nav>`;
+      ${t === 'route' && openReq ? `<span class="badge">${openReq}</span>` : ''}${t === 'money' && saysPaid ? `<span class="badge">${saysPaid}</span>` : ''}${t === 'quotes' && newAccepts ? `<span class="badge">${newAccepts}</span>` : ''}</button>`).join('')}</div></nav>`;
 }
 
 /* ----- In-app messages: replies live on the request as a thread ----- */
@@ -737,13 +769,15 @@ function viewCustomers() {
   if (state.editing) return viewCustomerEdit();
   if (state.custId && cust(state.custId)) return viewCustomer();
   const q = state.q.trim().toLowerCase();
-  const list = [...state.customers].sort(byName).filter((c) => !q || `${c.name} ${c.name2 || ''} ${c.address} ${c.phone}`.toLowerCase().includes(q));
+  // A to Z, active first; paused ones go to the bottom, grayed out.
+  const list = [...state.customers].sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0) || byName(a, b)).filter((c) => !q || `${c.name} ${c.name2 || ''} ${c.address} ${c.phone}`.toLowerCase().includes(q));
   const svc = (c) => [c.grass && 'Grass', c.snow && 'Snow'].filter(Boolean).join(' + ') || 'No services';
+  const firstPaused = list.findIndex((c) => !c.active);
   return `<div class="flex"><label class="grow"><span class="sr">Search customers</span><input class="inp" id="search" placeholder="Search name, address or phone" value="${esc(state.q)}" data-input="search"></label>
       ${isAdmin() ? '<button class="btn btn-primary" data-a="newCust">+ Add</button>' : ''}</div>
     ${isAdmin() && state.customers.length ? '<button class="btn btn-ghost" data-a="bulkPick">Text customers a saved message</button>' : ''}
-    ${list.length ? list.map((c) => `<button class="rowbtn" data-a="openCust" data-id="${c.id}"><div class="avatar">${esc(initials(c.name))}</div>
-      <div class="grow"><div class="b">${esc(bothNames(c))}${isAdmin() && usersForCustomer(c.id).length ? ' <span class="pill p-green" style="font-size:11px;padding:1px 7px;vertical-align:middle">App</span>' : ''}</div><div class="muted">${esc(c.address || 'No address')}</div></div>
+    ${list.length ? list.map((c, i) => `${i === firstPaused ? '<div class="sec">Paused</div>' : ''}<button class="rowbtn ${c.active ? '' : 'paused'}" data-a="openCust" data-id="${c.id}"><div class="avatar">${esc(initials(c.name))}</div>
+      <div class="grow"><div class="b">${esc(bothNames(c))}${isAdmin() && usersForCustomer(c.id).length ? ' <span class="pill p-green" style="font-size:11px;padding:1px 7px;vertical-align:middle">App</span>' : ''}</div><div class="muted">${esc(c.address || 'No address')}</div>${isAdmin() && c.needsDetails ? '<div class="small" style="color:#B45309">New from a quote: add details</div>' : ''}</div>
       <div style="text-align:right">${isAdmin() && priceOf(c.id).grass ? `<div class="b">${money(priceOf(c.id).grass)}</div>` : ''}<div class="muted small">${c.active ? svc(c) : 'Paused'}</div></div></button>`).join('')
       : `<div class="card empty">${state.customers.length ? 'No matches.' : 'No customers yet. Tap “+ Add” to enter your first one.'}</div>`}`;
 }
@@ -781,7 +815,11 @@ function viewCustomer() {
     <div class="sec">Invoices</div>
     ${owed.length ? `<div class="card"><div class="between"><div><div class="b">Owes ${money(owed.reduce((a, v) => a + num(v.total), 0))}</div><div class="muted small">${owed.length} unpaid invoice${owed.length === 1 ? '' : 's'}</div></div>
       ${owed.length > 1 ? `<button class="btn btn-lime btn-sm" data-a="markAllPaid" data-cid="${c.id}">Mark all paid</button>` : ''}</div></div>` : ''}
-    ${visits.length ? `<details class="card"><summary class="b">Balance history</summary>${ledgerHtml(ledgerFor(c.id).rows.slice().reverse(), true)}</details>` : ''}
+    ${visits.length ? `<details class="card"><summary class="b">Balance history (since ${shortDate(statementStart(c))})</summary>${ledgerHtml(statementRows(c.id).rows.slice().reverse())}</details>` : ''}
+    <div class="card"><div class="between"><div><div class="b">Statement PDF</div><div class="muted small">One PDF that updates every time. Starts fresh Jan 1${c.statementFrom && c.statementFrom > ymd(new Date()).slice(0, 4) + '-01-01' ? `; this one started ${shortDate(c.statementFrom)}` : ''}.</div></div>
+      <button class="btn btn-ghost btn-sm" data-a="custPdf" data-cid="${c.id}">Open</button></div>
+      <div class="flex wrap"><button class="link" style="min-height:32px" data-a="freshStatement" data-cid="${c.id}">Start a fresh statement today</button>
+      ${c.statementFrom && c.statementFrom > ymd(new Date()).slice(0, 4) + '-01-01' ? `<button class="link" style="min-height:32px;margin-left:auto" data-a="undoFreshStatement" data-cid="${c.id}">Undo</button>` : ''}</div></div>
     <div class="card list">${visits.length ? visits.map((v) => `<div class="line"><div class="grow"><div>${shortDate(v.date)} · ${esc(chargeLabel(v))}</div><div class="muted small">${esc(v.invoiceNo)}${v.paid && v.paidAt ? ' · ' + paidLabel(v.paidVia).toLowerCase() + ' ' + shortDate(ymd(new Date(v.paidAt))) + (v.cardFeePaid ? ` (+${money(v.cardFeePaid)} fee covered)` : '') : v.customerSaysPaid ? ' · says they paid' : ''}</div></div>
         <span class="flex"><b>${money(v.total)}</b>${v.paid ? `${pill('p-green', 'Paid')}<button class="link" style="margin-left:8px;min-height:32px" data-a="markUnpaid" data-id="${v.id}">Undo</button>`
           : `<button class="btn btn-lime btn-sm" data-a="markPaid" data-id="${v.id}">${v.customerSaysPaid ? 'Confirm paid' : 'Mark paid'}</button><button class="btn btn-ghost btn-sm" data-a="sendInvoice" data-id="${v.id}">${v.sentAt ? 'Resend' : 'Send'}</button>`}</span></div>`).join('') : '<div class="empty">No invoices yet.</div>'}</div>
@@ -940,12 +978,15 @@ function viewQuotes() {
         ${q.notes ? `<div style="white-space:pre-line">${esc(q.notes)}</div>` : ''}
         <button class="btn btn-ghost" data-a="editQuote" data-id="${q.id}">Edit quote</button>
         <button class="btn btn-primary" data-a="sendQuote" data-id="${q.id}">${q.status === 'Sent' ? 'Send again' : 'Send quote (PDF)'}</button>
-        ${q.status !== 'Accepted' ? `<button class="btn btn-ghost" data-a="quoteToCustomer" data-id="${q.id}">They said yes: make them a customer</button>` : ''}
+        ${q.acceptedAt ? `<div class="okbar">✓ Accepted online ${shortDate(ymd(new Date(q.acceptedAt)))} by ${esc(q.acceptedName || q.name)}${q.acceptedPhone ? ' · ' + esc(q.acceptedPhone) : ''}</div>` : ''}
+        ${q.customerId && cust(q.customerId) ? `<button class="btn btn-lime" data-a="quoteToCustomer" data-id="${q.id}">Open ${esc(first(cust(q.customerId).name))}’s customer page</button>`
+          : `<button class="btn btn-ghost" data-a="quoteToCustomer" data-id="${q.id}">They said yes: make them a customer</button>`}
+        ${q.token && !q.acceptedAt ? `<div class="muted small">They can accept with the link in the text or the green button in the PDF. You’ll get an email when they do.</div>` : ''}
         <button class="link danger" data-a="delQuote" data-id="${q.id}">Delete quote</button></div>`;
   }
   return `${quoteForm()}
     <div class="sec">Recent quotes</div>
-    ${state.quotes.length ? [...state.quotes].sort((a, b) => b.createdAt - a.createdAt).map((q) => `<button class="rowbtn" data-a="openQuote" data-id="${q.id}"><div class="grow"><div class="b">${esc(q.name)}</div><div class="muted">${shortDate(q.date)}</div></div>${pill(q.status === 'Sent' ? 'p-green' : q.status === 'Accepted' ? 'p-blue' : 'p-orange', q.status)}</button>`).join('') : '<div class="card empty">No quotes yet.</div>'}`;
+    ${state.quotes.length ? [...state.quotes].sort((a, b) => b.createdAt - a.createdAt).map((q) => `<button class="rowbtn" data-a="openQuote" data-id="${q.id}"><div class="grow"><div class="b">${esc(q.name)}</div><div class="muted">${shortDate(q.date)}</div></div>${q.acceptedAt && !q.acceptedSeen ? pill('p-green', 'New: accepted') : pill(q.status === 'Sent' ? 'p-green' : q.status === 'Accepted' ? 'p-blue' : 'p-orange', q.status)}</button>`).join('') : '<div class="card empty">No quotes yet.</div>'}`;
 }
 
 /* ----- Settings ----- */
@@ -1092,7 +1133,8 @@ function renderCustomerHome() {
         ${L.owe > 0 ? `${s.squareOn ? `<button class="btn btn-primary" data-a="payCard" data-cid="${c.id}">Pay ${money(L.owe)} with card / Apple Pay</button>` : ''}
           ${L.unpaid.every((v) => v.customerSaysPaid) ? '<div class="okbar">Thanks! I’ll confirm once it comes through.</div>' : `<button class="btn btn-ghost" data-a="custPaid" data-cid="${c.id}">I’ve paid my balance (Zelle / Venmo)</button>`}`
           : '<div class="okbar">You’re all paid up. Thank you!</div>'}
-        ${L.rows.length ? `<div class="lbl" style="margin-top:6px">History</div>${ledgerHtml(L.rows.slice(-12).reverse(), true)}` : ''}</div>
+        ${L.rows.length ? `<div class="lbl" style="margin-top:6px">History this year</div>${ledgerHtml(statementRows(c.id).rows.slice(-12).reverse())}` : ''}
+        <button class="btn btn-ghost" data-a="custPdf" data-cid="${c.id}">View statement (PDF)</button></div>
       <div class="sec">How to pay</div>
       <div class="card">
         ${venmoUrl ? `<a class="btn btn-primary" href="${esc(venmoUrl)}" target="_blank" rel="noopener">Pay with Venmo</a><div class="qr">${qrSvg(venmoUrl)}</div>` : ''}
@@ -1108,7 +1150,7 @@ function renderCustomerHome() {
       <div class="card"><div class="b">Message Jace</div><label class="f"><span class="sr">Message</span><textarea class="inp" id="m_text" placeholder="Questions, gate code changes, anything…"></textarea></label>
         <div class="flex"><button class="btn btn-primary grow" data-a="custRequest" data-type="message">Send in the app</button><a class="btn btn-ghost" href="${smsHref(s.businessPhone, '')}">Text instead</a></div></div>
       ${paid.length ? `<button class="link" data-a="togglePaid">${state.showPaidHistory ? 'Hide' : 'Show'} paid invoices (${paid.length})</button>
-        ${state.showPaidHistory ? `<div class="card list">${paid.map((v) => `<div class="line"><div class="grow"><div>${shortDate(v.date)} · ${esc(chargeLabel(v))}</div></div><b>${money(v.total)}</b><button class="link" style="margin-left:10px;min-height:32px" data-a="custPdf" data-id="${v.id}">PDF</button></div>`).join('')}</div>` : ''}` : ''}
+        ${state.showPaidHistory ? `<div class="card list">${paid.map((v) => `<div class="line"><div class="grow"><div>${shortDate(v.date)} · ${esc(chargeLabel(v))}</div></div><b>${money(v.total)}</b></div>`).join('')}</div>` : ''}` : ''}
       <div class="bizfoot"><img src="logo-full.jpg" alt="Precision Cut Lawns">
         <div class="motto">EVERY LINE. EVERY EDGE. EVERY TIME.</div>
         <div class="muted small">${[s.businessPhone ? `<a href="tel:${esc(s.businessPhone)}">${esc(s.businessPhone)}</a>` : '', s.businessEmail ? `<a href="mailto:${esc(s.businessEmail)}">${esc(s.businessEmail)}</a>` : '', s.website ? esc(s.website) : ''].filter(Boolean).join(' · ')}</div></div>
@@ -1555,7 +1597,7 @@ const A = {
     if (!name) return toast('Name is needed');
     const existing = cust(state.custId);
     const data = { name, name2: val('c_name2').trim(), phone: val('c_phone'), textAll: checked('c_textAll'), address: val('c_address'), email: val('c_email').trim().toLowerCase(), deck: val('c_deck'), active: checked('c_active'),
-      grass: checked('c_grass'), grassPlan: val('c_grassPlan'), snow: checked('c_snow'), snowPlan: val('c_snowPlan') };
+      grass: checked('c_grass'), grassPlan: val('c_grassPlan'), snow: checked('c_snow'), snowPlan: val('c_snowPlan'), needsDetails: false };
     // Read every field before writing: a write can redraw the screen.
     const pricing = { grass: num(val('c_pGrass')), snow: num(val('c_pSnow')), season: num(val('c_pSeason')) };
     const notes = { text: val('c_notes') };
@@ -1731,19 +1773,23 @@ const A = {
     resetQuoteForm(); toast('Quote saved'); render(); scrollTo(0, 0);
   },
   cancelQuoteEdit() { resetQuoteForm(); render(); },
-  openQuote(el) { state.quoteId = el.dataset.id; render(); scrollTo(0, 0); },
+  openQuote(el) { const q = state.quotes.find((x) => x.id === el.dataset.id); if (q?.acceptedAt && !q.acceptedSeen) store.update('quotes', q.id, { acceptedSeen: true }); state.quoteId = el.dataset.id; render(); scrollTo(0, 0); },
   quoteBack() { state.quoteId = null; resetQuoteForm(); render(); },
   async sendQuote(el) {
-    const q = state.quotes.find((x) => x.id === el.dataset.id), s = settings();
-    await run(async () => { if (await sharePdf(await quoteFile(q), fill(s.quoteMsg, { first: first(q.name), phone: s.businessPhone }), q.phone)) store.update('quotes', q.id, { status: 'Sent' }); });
+    let q = state.quotes.find((x) => x.id === el.dataset.id); const s = settings();
+    // Every quote gets its own private Accept link (saved before sending so it works right away).
+    if (!q.token) { q = { ...q, token: (newId() + newId()).slice(0, 24) }; await store.update('quotes', q.id, { token: q.token }); }
+    const text = fill(s.quoteMsg, { first: first(q.name), phone: s.businessPhone }) + (q.acceptedAt ? '' : `\n\nTo accept, tap here: ${quoteLink(q)}`);
+    await run(async () => { if (await sharePdf(await quoteFile(q), text, q.phone)) { if (!q.acceptedAt) store.update('quotes', q.id, { status: 'Sent' }); } });
   },
   quoteToCustomer(el) {
     const q = state.quotes.find((x) => x.id === el.dataset.id);
+    if (q.customerId && cust(q.customerId)) { state.tab = 'customers'; state.custId = q.customerId; state.quoteId = null; render(); scrollTo(0, 0); return; }
     const plan = { Weekly: 'weekly', 'Every 2 weeks': 'biweekly' }[q.freq] || 'oncall';
     const id = store.add('customers', { name: q.name, phone: q.phone, address: q.address, email: '', deck: '', active: true, grass: !!q.grassPrice, grassPlan: plan, snow: !!q.snowPrice, snowPlan: q.snowPlan, createdAt: Date.now() });
     store.set('pricing', id, { grass: q.grassPrice || 0, snow: q.snowPlan === 'perSnow' ? q.snowPrice || 0 : 0, season: q.snowPlan === 'seasonal' ? q.snowPrice || 0 : 0 });
     store.set('notes', id, { text: q.notes || '' });
-    store.update('quotes', q.id, { status: 'Accepted' });
+    store.update('quotes', q.id, { status: 'Accepted', customerId: id });
     if (store.mode === 'local') syncDemoCustomers();
     state.tab = 'customers'; state.custId = id; state.quoteId = null; toast('Customer added'); render();
   },
@@ -1801,7 +1847,14 @@ const A = {
     state.sheet.title = (type === 'snow' ? 'Snow removal requested!' : 'Mow requested!') + ' Want to text Jace too?';
     renderSheet();
   },
-  async custPdf(el) { const v = visitOf(el.dataset.id); await run(async () => { const f = await invoiceFile(v); const url = URL.createObjectURL(f); window.open(url, '_blank') || (location.href = url); }); },
+  acceptQuote(el) { acceptQuotePage(el); },
+  freshStatement(el) {
+    const c = cust(el.dataset.cid); if (!c) return;
+    if (!confirm(`Start ${first(c.name)}’s statement fresh from today? Anything still owed carries over as one line. Nothing is deleted.`)) return;
+    store.update('customers', c.id, { statementFrom: today() }); toast('Statement starts today');
+  },
+  undoFreshStatement(el) { store.update('customers', el.dataset.cid, { statementFrom: '' }); toast('Statement starts Jan 1 again'); },
+  async custPdf(el) { await run(async () => { const f = await statementFile(el.dataset.cid); const url = URL.createObjectURL(f); window.open(url, '_blank') || (location.href = url); }); },
   payCard(el) {
     if (settings().cardFeeOption === false) return A.payCardGo(el);
     state.sheet = { kind: 'payCard', cid: el.dataset.cid }; renderSheet();
@@ -2017,6 +2070,63 @@ function renderStartFail() {
     <p>The app couldn’t connect. Check your signal or Wi-Fi, then try again.</p>
     <button class="btn btn-primary" onclick="location.reload()">Try again</button></div></div>`;
 }
+/* ---------- Public quote page (#quote=<token>): no account needed ---------- */
+const quoteToken = (() => { const m = location.hash.match(/quote=([A-Za-z0-9]+)/); return m ? m[1] : ''; })();
+let pubQuote = null;
+// Demo mode has no server: read and write this browser's saved quotes instead.
+async function quoteCall(fn, data) {
+  if (store.mode !== 'local') return store.call(fn, data);
+  const all = JSON.parse(localStorage.getItem('pc_quotes') || '{}'), id = Object.keys(all).find((k) => all[k].token === data.token);
+  if (!id) throw new Error('This quote is no longer available. Please text Jace for a new one.');
+  let q = all[id];
+  const until = ymd(new Date(parseYmd(q.date).getTime() + 30 * 864e5));
+  if (fn === 'acceptQuote' && !q.acceptedAt) {
+    if (today() > until) throw new Error('This quote has expired.');
+    const cid = q.customerId || store.add('customers', { name: data.name, phone: data.phone, address: q.address || '', email: '', deck: '', active: true, grass: !!q.grassPrice,
+      grassPlan: { Weekly: 'weekly', 'Every 2 weeks': 'biweekly' }[q.freq] || 'oncall', snow: !!q.snowPrice, snowPlan: q.snowPlan || 'perSnow', createdAt: Date.now(), fromQuote: id, needsDetails: true });
+    if (!q.customerId) store.set('pricing', cid, { grass: q.grassPrice || 0, snow: q.snowPlan === 'perSnow' ? q.snowPrice || 0 : 0, season: q.snowPlan === 'seasonal' ? q.snowPrice || 0 : 0 });
+    q = { ...q, status: 'Accepted', acceptedAt: Date.now(), acceptedName: data.name, acceptedPhone: data.phone, acceptedSeen: false, customerId: cid };
+    await store.update('quotes', id, q);
+  }
+  const st = settings();
+  return { ...q, until, expired: !q.acceptedAt && today() > until, business: { name: st.businessName, phone: st.businessPhone, email: st.businessEmail } };
+}
+function renderQuotePage(err = '') {
+  const q = pubQuote, b = q?.business || {};
+  const head = `<header class="top"><div class="top-row">${brand()}</div>${q ? `<h1>Your quote</h1><div class="sub">For ${esc(q.name)}${q.address ? ' · ' + esc(q.address) : ''}</div>` : ''}</header>`;
+  if (!q) { app.innerHTML = `${head}<main class="no-tabs">${err ? `<div class="card"><div class="warnbar">${esc(err)}</div></div>` : '<p class="center muted" style="padding:40px">Loading your quote…</p>'}</main>`; return; }
+  const lines = quoteLinesOf(q), total = lines.reduce((a, l) => a + num(l.amount), 0);
+  let action;
+  if (q.acceptedAt) action = `<div class="okbar">✓ Accepted ${shortDate(ymd(new Date(q.acceptedAt)))}${q.acceptedName ? ' by ' + esc(q.acceptedName) : ''}. Thank you! Jace will text you soon to get you on the schedule.</div>`;
+  else if (q.expired) action = `<div class="warnbar">This quote expired ${shortDate(q.until)}. Text ${esc(b.phone)} for an updated one.</div>`;
+  else action = `<div class="b">Accept this quote</div>
+      <label class="f"><span class="lbl">Your name</span><input class="inp" id="qa_name" autocomplete="name" value="${esc(q.name)}"></label>
+      <label class="f"><span class="lbl">Your phone number</span><input class="inp" id="qa_phone" type="tel" inputmode="tel" autocomplete="tel" value="${esc(q.phone || '')}"></label>
+      ${err ? `<div class="warnbar">${esc(err)}</div>` : ''}
+      <button class="btn btn-lime" data-a="acceptQuote">Accept quote</button>
+      <div class="muted small">No account needed. Jace gets your name and number and will text you to set things up.</div>`;
+  app.innerHTML = `${head}<main class="no-tabs">
+    <div class="card"><div class="between"><div class="muted small">Quote Q-${esc(q.number)} · ${shortDate(q.date)}</div><div class="muted small">Good until ${shortDate(q.until)}</div></div>
+      <div class="list">${lines.map((l) => `<div class="line"><span>${esc(l.desc)}</span><b>${money(l.amount)}</b></div>`).join('')}
+      ${q.grassPrice && q.snowPrice ? '' : `<div class="line b"><span>Estimated total</span><span>${money(total)}</span></div>`}</div>
+      ${q.notes ? `<div style="white-space:pre-line">${esc(q.notes)}</div>` : ''}</div>
+    <div class="card">${action}</div>
+    <div class="muted small center">Questions? Call or text <a href="tel:${esc(b.phone)}">${esc(b.phone)}</a></div></main>`;
+}
+async function openQuotePage() {
+  renderQuotePage();
+  try { pubQuote = await quoteCall('getQuote', { token: quoteToken }); renderQuotePage(); }
+  catch (e) { console.error(e); renderQuotePage(e.message || 'Couldn’t load the quote. Check your signal and try again.'); }
+}
+async function acceptQuotePage(btn) {
+  const name = val('qa_name').trim(), phone = val('qa_phone').trim();
+  if (name.length < 2) return renderQuotePage('Type your name.');
+  if (phone.replace(/\D/g, '').replace(/^1(?=\d{10}$)/, '').length !== 10) return renderQuotePage('Type a 10-digit phone number.');
+  btn.disabled = true; btn.textContent = 'Accepting…';
+  try { pubQuote = await quoteCall('acceptQuote', { token: quoteToken, name, phone }); renderQuotePage(); }
+  catch (e) { console.error(e); renderQuotePage(e.message || 'Couldn’t accept. Check your signal and try again.'); }
+}
+
 (async function start() {
   checkForUpdate({ auto: true });
   // On a weak signal, say so instead of sitting on "Loading…" forever.
@@ -2024,6 +2134,7 @@ function renderStartFail() {
   try { store = await createStore(showError); }
   catch (e) { console.error(e); clearTimeout(slow); return renderStartFail(); }
   clearTimeout(slow);
+  if (quoteToken) return openQuotePage();
   store.onAuth((u) => {
     unsubs.forEach((x) => typeof x === 'function' && x()); unsubs = [];
     state.user = u; state.account = null; state.access = null; state.need = null;
