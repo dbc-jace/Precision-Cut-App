@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.25.1';
+import { createStore, newId } from './store.js?v=2026.11.25.3';
 
-const APP_VERSION = '2026.11.25.1'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.25.3'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -93,7 +93,7 @@ const DEFAULTS = {
   squareOn: false,
   snowIncluded: 3, snowPerInch: 10, // per-snow price covers this many inches; each inch over adds this much // Card / Apple Pay through Square (needs the Square setup done first)
   receiptMsg: 'Got it, thanks {first}! Received {total} for {date}. - Precision Cut Lawns',
-  quoteMsg: 'Hi {first}, here\'s your quote from Precision Cut Lawns. Call or text {phone} with any questions!',
+  quoteMsg: 'Hi {first}, here\'s your quote from Precision Cut Lawns. Call or text {phone} with any questions!\n\nTo accept, tap here: {accept}',
   welcomeCustomer: 'Hi {first}! Welcome to Precision Cut Lawns. Tap this link to set up your account, where you can see your schedule, skip a week, request snow removal and pay your invoices:\n\n{link}\n\nTip: tap Share, then "Add to Home Screen" to keep it handy. - Jace',
   // Saved messages Jace writes himself (Settings > Messages > My saved messages). Pick one from a customer's page or "Text customers".
   customMsgs: [{ id: 'acct', title: 'Create your account', body: 'Hi {first}, it\'s Jace with Precision Cut Lawns! I now have an app for my customers. Tap this link to create your account, where you can see your schedule, skip a week, request snow removal and pay invoices:\n\n{invite}\n\nThe link is just for you. Tip: once you\'re in, tap Share, then "Add to Home Screen" to keep it handy. Thanks! - Jace' }],
@@ -447,6 +447,20 @@ async function quoteFile(q) {
     lines, totalLabel: q.grassPrice && q.snowPrice ? '' : 'Estimated total', total, notes: [hasOpt ? OPTIONAL_NOTE : '', q.notes].filter(Boolean).join('\n\n'), acceptUrl: q.token ? quoteLink(q) : '',
     terms: `Prices are good for 30 days. Prepared by Jace, ${settings().businessName}.` });
   return new File([blob], `Precision Cut Quote ${q.name || q.number}.pdf`, { type: 'application/pdf' });
+}
+// The text sent with a quote: Settings > Messages > Quote text, with every fill-in filled.
+// Sent exactly as written: nothing is added. {accept} puts the Accept link in the text (the PDF has its own Accept button).
+function quoteText(q, s = settings()) {
+  const lines = quoteLinesOf(q);
+  const opt = lines.some((l) => l.optional) ? ' (without optional add-ons)' : '';
+  // Mowing + snow quotes have no single total (per cut vs per visit/season), same as on the quote itself.
+  const total = q.grassPrice && q.snowPrice
+    ? `${money(q.grassPrice)} per cut and ${money(q.snowPrice)} ${q.snowPlan === 'seasonal' ? 'for the snow season' : 'per snow visit'}`
+    : money(quoteTotal(lines)) + opt;
+  const accept = q.acceptedAt ? '' : quoteLink(q);
+  const vars = { first: first(q.name), phone: s.businessPhone, email: s.businessEmail, link: appLink(), zelle: s.zelle,
+    venmo: s.venmo ? ' or Venmo ' + s.venmo : '', date: longDate(q.date), total, accept, number: `Q-${q.number}` };
+  return fill(s.quoteMsg || DEFAULTS.quoteMsg, vars);
 }
 // Opens the phone's share sheet with the PDF + message (pick Messages). Falls back to download + text.
 async function sharePdf(file, text, phone) {
@@ -1277,7 +1291,7 @@ function viewSettings() {
       ${msg('reminderMsg', 'Weekly reminder', 'Wednesdays, with the skip link')}${msg('oncallMsg', 'On-call text', '“Would you like your grass cut today?”')}
       ${msg('invoiceMsg', 'Invoice text', 'Sent with the PDF when they owe. How to pay is added for you.')}${msg('paidMsg', 'Paid receipt text', 'Sent with the PDF when it’s paid')}
       ${fold('msg_receipt', 'Receipt text', s.receiptEnabled ? 'On' : 'Off', `<label class="check"><input type="checkbox" data-setting="receiptEnabled" ${s.receiptEnabled ? 'checked' : ''}> Offer a receipt text when I mark Paid</label>${field('receiptMsg', 'Text', '', true)}`, true)}
-      ${msg('quoteMsg', 'Quote text', 'Sent with the quote PDF')}${msg('welcomeCustomer', 'Customer welcome', 'Sent with their invite')}${msg('welcomeCrew', 'Crew welcome', 'Sent with their invite')}
+      ${fold('msg_quoteMsg', 'Quote text', 'Sent with the quote PDF', `<div class="muted small">{total} is the quote’s estimated total, {date} its date, {number} its quote number. This text is sent exactly as written. Put {accept} where you want the quote’s Accept link (the PDF has an Accept button too).</div>${field('quoteMsg', 'Text', '', true)}`, true)}${msg('welcomeCustomer', 'Customer welcome', 'Sent with their invite')}${msg('welcomeCrew', 'Crew welcome', 'Sent with their invite')}
       ${customMsgs().map((m) => fold('cmsg_' + m.id, esc(m.title || 'Untitled'), 'My message', `<label class="f"><span class="lbl">Name</span><input class="inp" data-cmsg="${esc(m.id)}" data-field="title" value="${esc(m.title)}" placeholder="e.g. Spring sign-up"></label>
         <label class="f"><span class="lbl">Text</span><textarea class="inp" data-cmsg="${esc(m.id)}" data-field="body" rows="6">${esc(m.body)}</textarea></label>
         <button class="btn btn-primary" data-a="sendSaved" data-id="${esc(m.id)}">Send</button>
@@ -2075,7 +2089,7 @@ const A = {
     let q = state.quotes.find((x) => x.id === el.dataset.id); const s = settings();
     // Every quote gets its own private Accept link (saved before sending so it works right away).
     if (!q.token) { q = { ...q, token: (newId() + newId()).slice(0, 24) }; await store.update('quotes', q.id, { token: q.token }); }
-    const text = fill(s.quoteMsg, { first: first(q.name), phone: s.businessPhone }) + (q.acceptedAt ? '' : `\n\nTo accept, tap here: ${quoteLink(q)}`);
+    const text = quoteText(q, s);
     await run(async () => { if (await sharePdf(await quoteFile(q), text, q.phone)) { if (!q.acceptedAt) store.update('quotes', q.id, { status: 'Sent' }); } });
   },
   quoteToCustomer(el) {
