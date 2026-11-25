@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.16.18';
+import { createStore, newId } from './store.js?v=2026.11.25.1';
 
-const APP_VERSION = '2026.11.16.18'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.25.1'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
