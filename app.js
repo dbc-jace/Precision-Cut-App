@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.25.3';
+import { createStore, newId } from './store.js?v=2026.11.26.2';
 
-const APP_VERSION = '2026.11.25.3'; // bump-version.sh keeps this, version.json and the ?v= tags in step
+const APP_VERSION = '2026.11.26.2'; // bump-version.sh keeps this, version.json and the ?v= tags in step
 const app = document.getElementById('app');
 const sheetEl = document.getElementById('sheet');
 const toastEl = document.getElementById('toast');
@@ -653,7 +653,33 @@ async function seedDemo() {
 }
 
 /* ---------- rendering ---------- */
-function render() {
+// The screen redraws on every change, so motion only plays when you actually move somewhere:
+// a new tab or page gets .enter (cards glide in), a sheet that just opened gets .opening.
+// Data often arrives in a few quick redraws, so for a moment after a change each redraw picks the
+// animation up where it was (--since = time already played) instead of restarting it.
+const MOTION_MS = 900;
+let lastScreen = '', screenAt = 0, sheetWasOpen = false, sheetAt = 0;
+function motion() {
+  const screen = [state.user?.email, state.access, state.locked, state.loadedOnce, role?.(), state.tab, state.custId, state.editing, state.quoteId,
+    state.quoteEdit, state.routeSeg, state.custSeg, state.moneyTab, location.hash.startsWith('#quote='), !!pubQuote].join('|');
+  const now = performance.now();
+  if (screen !== lastScreen) { lastScreen = screen; screenAt = now; }
+  if (now - screenAt < MOTION_MS) {
+    app.style.setProperty('--since', `${-(now - screenAt)}ms`);
+    app.querySelectorAll('main, .top, .auth, .tab.on').forEach((el) => el.classList.add('enter'));
+  }
+}
+function sheetMotion() {
+  const now = performance.now();
+  if (state.sheet && !sheetWasOpen) sheetAt = now;
+  sheetWasOpen = !!state.sheet;
+  if (state.sheet && now - sheetAt < MOTION_MS) {
+    sheetEl.style.setProperty('--since', `${-(now - sheetAt)}ms`);
+    sheetEl.querySelector('.shade')?.classList.add('opening');
+  }
+}
+function render() { renderScreen(); try { motion(); } catch {} }
+function renderScreen() {
   if (!store) return;
   if (!state.user) return renderSignIn();
   if (state.access === 'join') return renderJoin();
@@ -1474,7 +1500,7 @@ function renderLock() {
 /* ----- Sheets (pop-ups) ----- */
 function renderSheet() {
   const sh = state.sheet;
-  if (!sh) { sheetEl.innerHTML = ''; return; }
+  if (!sh) { sheetEl.innerHTML = ''; sheetWasOpen = false; return; }
   let inner = '';
   if (sh.kind === 'done') {
     const c = cust(sh.cid);
@@ -1582,6 +1608,7 @@ function renderSheet() {
       <button class="btn btn-primary" data-a="saveLock">Save</button><button class="btn btn-ghost" data-a="closeSheet">Cancel</button>`;
   }
   sheetEl.innerHTML = `<div class="shade" data-a="closeSheet"><div class="panel" data-stop>${inner}</div></div>`;
+  try { sheetMotion(); } catch {}
 }
 // Snow stops: one per visit, so a driveway can be cleared (and billed) more than once a day.
 const snowStops = (cid, date) => state.stops.filter((s) => s.type === 'snow' && s.customerId === cid && s.date === date);
@@ -2408,6 +2435,8 @@ document.addEventListener('change', async (ev) => {
 // Remember which Settings folds are open so a redraw doesn't close them.
 document.addEventListener('toggle', (ev) => {
   const k = ev.target.dataset?.fold;
+  // Glide the contents in when you open a section (only when it was closed, not on redraws).
+  if (k && ev.target.open && !state.openFolds.has(k)) ev.target.querySelector(':scope > .fold-body')?.classList.add('enter');
   if (k) ev.target.open ? state.openFolds.add(k) : state.openFolds.delete(k);
 }, true);
 
@@ -2498,6 +2527,7 @@ function renderQuotePage(err = '') {
       ${q.notes ? `<div style="white-space:pre-line">${esc(q.notes)}</div>` : ''}</div>
     <div class="card">${action}</div>
     <div class="muted small center">Questions? Call or text <a href="tel:${esc(b.phone)}">${esc(b.phone)}</a></div></main>`;
+  try { motion(); } catch {}
 }
 async function openQuotePage() {
   renderQuotePage();

@@ -253,7 +253,57 @@ details.fold.nested > .fold-body { padding: 0 12px 12px; }
 /* Address: city, state, ZIP on one row. */
 .addr3 { display: grid; grid-template-columns: 1fr 64px 92px; gap: 8px; }
 
+/* ---------- Motion ----------
+   The app redraws on every change, so entrance animations hang off classes app.js adds only
+   when you move somewhere new (.enter on a new screen, .opening on a sheet that just opened). */
+@keyframes rise { from { opacity: 0; transform: translateY(18px) scale(.98); } to { opacity: 1; transform: none; } }
+@keyframes slideIn { from { opacity: 0; transform: translateX(-14px); } to { opacity: 1; transform: none; } }
+@keyframes pop { 0% { transform: scale(.82); } 55% { transform: scale(1.06); } 100% { transform: scale(1); } }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes sheetUp { from { transform: translateY(100%); } to { transform: none; } }
+@keyframes drop { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+@keyframes drift { 0%, 100% { transform: translate(0,0) scale(1); } 50% { transform: translate(-24px,18px) scale(1.15); } }
+@keyframes glow { 0%, 100% { opacity: .75; } 50% { opacity: 1; } }
+@keyframes sheen { 0%, 78% { transform: translateX(-120%) skewX(-20deg); } 100% { transform: translateX(260%) skewX(-20deg); } }
+@keyframes ping { 0% { box-shadow: 0 4px 10px -2px rgba(229,72,77,.6), 0 0 0 2px #fff, 0 0 0 2px rgba(229,72,77,.5); }
+  70%, 100% { box-shadow: 0 4px 10px -2px rgba(229,72,77,.6), 0 0 0 2px #fff, 0 0 0 10px rgba(229,72,77,0); } }
+
+/* New screen: header text slides in, cards glide up one after another. */
+/* --since (set by app.js) is how much has already played, so a quick redraw continues the animation. */
+.top.enter h1 { animation: slideIn .5s cubic-bezier(.2,.8,.2,1) var(--since, 0ms) both; }
+.top.enter .sub { animation: slideIn .5s cubic-bezier(.2,.8,.2,1) calc(var(--since, 0ms) + 60ms) both; }
+main.enter > * { --i: 0; animation: rise .55s cubic-bezier(.2,.8,.2,1) calc(var(--since, 0ms) + var(--i) * 40ms) both; }
+main.enter > :nth-child(2) { --i: 1; }
+main.enter > :nth-child(3) { --i: 2; }
+main.enter > :nth-child(4) { --i: 3; }
+main.enter > :nth-child(5) { --i: 4; }
+main.enter > :nth-child(6) { --i: 5; }
+main.enter > :nth-child(7) { --i: 6; }
+main.enter > :nth-child(n+8) { --i: 7; }
+.tab.on.enter { animation: pop .5s var(--spring) var(--since, 0ms); }
+.auth.enter .card { animation: rise .7s cubic-bezier(.2,.8,.2,1) var(--since, 0ms) both; }
+.auth.enter > :not(.card) { animation: fadeIn .6s var(--since, 0ms) both; }
+
+/* Sheets slide up over a fading backdrop; opened Settings sections ease in. */
+#sheet .shade.opening { animation: fadeIn .25s ease-out var(--since, 0ms) both; }
+#sheet .shade.opening .panel { animation: sheetUp .45s cubic-bezier(.2,.9,.25,1) var(--since, 0ms) both; }
+.fold-body.enter { animation: drop .35s ease-out both; }
+
+/* Always-on, gentle: header glows drift, profit tile breathes, lime buttons catch the light, badges ping. */
+.top::before { animation: drift 14s ease-in-out infinite; }
+.top::after { animation: drift 18s ease-in-out infinite reverse; }
+.card.dark::after, .kpi.profit::after { animation: glow 5s ease-in-out infinite; }
+.btn-lime { overflow: hidden; }
+.btn-lime::after { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 40%; pointer-events: none;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.55), transparent); animation: sheen 5s ease-in-out infinite; }
+.btn-lime:disabled::after { display: none; }
+.badge { animation: ping 2.4s ease-out infinite; }
+
+/* Hover lift on computers (phones skip it). */
+@media (hover: hover) {
+  .btn:hover:not(:disabled), .rowbtn:hover { transform: translateY(-2px); }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  body::before, .auth::before { animation: none; }
-  * { transition: none !important; }
+  *, *::before, *::after { animation: none !important; transition: none !important; }
 }
